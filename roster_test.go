@@ -101,40 +101,68 @@ func TestChildrenOf(t *testing.T) {
 	}
 }
 
-func TestBuildSystemAppendix(t *testing.T) {
-	// With parent
-	app := buildSystemAppendix("worker-1", "orch-a", "worker")
-	if !strings.Contains(app, "worker-1") || !strings.Contains(app, "orch-a") {
-		t.Errorf("appendix should mention id and parent: %s", app)
-	}
-	if !strings.Contains(app, "roster notify orch-a") {
-		t.Errorf("appendix should instruct on notify syntax: %s", app)
-	}
-	// Without parent (top of tree)
-	app2 := buildSystemAppendix("dispatch", "", "dispatcher")
-	if !strings.Contains(app2, "no parent") {
-		t.Errorf("top-level appendix should say no parent: %s", app2)
+func TestRenderPrompt(t *testing.T) {
+	// Embedded templates should render for each known kind without error.
+	for _, kind := range KnownKinds {
+		out, err := renderPrompt(kind, promptData{
+			ID:          "test-" + kind,
+			Parent:      "some-parent",
+			Description: "the test agent",
+		})
+		if err != nil {
+			t.Fatalf("renderPrompt(%s): %v", kind, err)
+		}
+		if !strings.Contains(out, "test-"+kind) {
+			t.Errorf("rendered %s prompt missing ID placeholder", kind)
+		}
+		if kind != "dispatcher" && !strings.Contains(out, "some-parent") {
+			t.Errorf("rendered %s prompt missing Parent placeholder", kind)
+		}
 	}
 }
 
-func TestMergeAppendSystem(t *testing.T) {
-	// No existing --append-system: should add one.
-	in := []string{"--model", "sonnet"}
-	out := mergeAppendSystem(in, "EXTRA")
-	if len(out) != 4 || out[2] != "--append-system" || out[3] != "EXTRA" {
-		t.Errorf("add: got %v", out)
+func TestMaterializeDefaultPrompts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ROSTER_PROMPTS_DIR", dir)
+	written, err := materializeDefaultPrompts(false)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Existing --append-system: should concatenate.
-	in = []string{"--model", "sonnet", "--append-system", "USER"}
-	out = mergeAppendSystem(in, "EXTRA")
-	if len(out) != 4 || out[3] != "USER\n\nEXTRA" {
-		t.Errorf("merge: got %v", out)
+	if len(written) != len(KnownKinds) {
+		t.Fatalf("expected %d written, got %d", len(KnownKinds), len(written))
 	}
-	// Existing --append-system= (= form).
-	in = []string{"--model", "sonnet", "--append-system=USER"}
-	out = mergeAppendSystem(in, "EXTRA")
-	if len(out) != 3 || out[2] != "--append-system=USER\n\nEXTRA" {
-		t.Errorf("merge =form: got %v", out)
+	// Re-run without --force should skip.
+	written2, err := materializeDefaultPrompts(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written2) != 0 {
+		t.Errorf("second run without --force should write nothing, got %d", len(written2))
+	}
+	// Force overwrites.
+	written3, err := materializeDefaultPrompts(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written3) != len(KnownKinds) {
+		t.Errorf("force should rewrite all, got %d", len(written3))
+	}
+}
+
+func TestPromptOverrideFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("ROSTER_PROMPTS_DIR", dir)
+	// Put a custom template on disk.
+	custom := "OVERRIDE for {{.ID}} parent={{.Parent}}"
+	if err := os.WriteFile(dir+"/worker.md", []byte(custom), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := renderPrompt("worker", promptData{ID: "x", Parent: "y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "OVERRIDE for x parent=y" {
+		t.Fatalf("disk override not honored, got: %s", out)
 	}
 }
 

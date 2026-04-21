@@ -35,6 +35,17 @@ Collaboration:
           Wait until recipient's TUI is ready, paste the message, submit.
           Appears in their Claude conversation as a new user turn.
 
+Setup:
+  init    [--force]
+          Materialize the three default prompt templates into
+          ~/.config/roster/prompts/{dispatcher,orchestrator,worker}.md.
+          Run once; edit the templates to customize agent behavior.
+  prompt show <kind> [--id X --parent Y --description "..."]
+          Render a prompt template with placeholder values. Useful to
+          see what an agent will actually see.
+  prompt edit <kind>
+          Open the template in $EDITOR.
+
 Environment:
   CAMUX_BIN     overrides the camux executable name
   AMUX_BIN      overrides the amux executable name
@@ -82,6 +93,10 @@ func main() {
 		err = cmdForget(args)
 	case "notify":
 		err = cmdNotify(args)
+	case "init":
+		err = cmdInit(args)
+	case "prompt":
+		err = cmdPrompt(args)
 	default:
 		fmt.Fprintf(os.Stderr, "roster: unknown command %q\n\n", cmd)
 		fmt.Fprint(os.Stderr, usageText)

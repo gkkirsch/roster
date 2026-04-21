@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -44,14 +45,23 @@ func cmdSpawn(args []string) error {
 		return fmt.Errorf("spawn: --parent %q not in roster", *parent)
 	}
 
-	// Auto-inject a system prompt appendix so the spawned Claude knows its
-	// id and parent, and how to message back via `roster notify`.
-	systemAppendix := buildSystemAppendix(id, *parent, *kind)
-	if *parent != "" {
-		// Append our context to any user-provided --append-system, or add
-		// a fresh one. We detect --append-system to merge; otherwise add.
-		camuxFlags = mergeAppendSystem(camuxFlags, systemAppendix)
+	// Render the lean system prompt for this kind (dispatcher / orchestrator
+	// / worker). The template replaces the default Claude Code prompt
+	// entirely — this is why workers are sharp rather than distracted by
+	// memory discovery, CLAUDE.md auto-loading, etc.
+	systemPrompt, err := renderPrompt(*kind, promptData{
+		ID:          id,
+		Parent:      *parent,
+		Description: *description,
+	})
+	if err != nil {
+		return fmt.Errorf("spawn: render system prompt: %w", err)
 	}
+
+	// Prepend --system-prompt so any user-provided --system-prompt in
+	// camuxFlags wins (later flag overrides in the claude CLI).
+	baseFlags := []string{"--system-prompt", systemPrompt}
+	camuxFlags = append(baseFlags, camuxFlags...)
 
 	// Pick the amux session name. Matches the id directly — simple and
 	// `amux list` shows the human id.
@@ -95,42 +105,6 @@ func cmdSpawn(args []string) error {
 	}
 	fmt.Println(target)
 	return nil
-}
-
-// buildSystemAppendix returns the text roster injects into every spawned
-// agent's system prompt so the Claude inside knows its identity and how
-// to message its parent.
-func buildSystemAppendix(id, parent, kind string) string {
-	if parent == "" {
-		return fmt.Sprintf(
-			"You are roster agent %q (kind: %s). You have no parent. "+
-				"Other roster tools: `roster list`, `roster notify <id> \"<msg>\"`, `roster describe <id>`, `roster spawn <new-id> --parent %s ...`.",
-			id, kind, id)
-	}
-	return fmt.Sprintf(
-		"You are roster agent %q (kind: %s), reporting to agent %q. "+
-			"When you finish your task, hit an error, or need guidance, notify your parent with:\n"+
-			"  roster notify %s \"<your message>\"\n"+
-			"Do this via your Bash tool. Your parent will respond by sending you a new message (which appears as a new user turn here). "+
-			"You can also message siblings or other agents via `roster notify <id> \"<msg>\"`, but upward-to-parent is the main channel.",
-		id, kind, parent, parent)
-}
-
-// mergeAppendSystem walks the camux-spawn flags and concatenates roster's
-// systemAppendix onto any existing --append-system. If --append-system
-// isn't already present, it appends a new one.
-func mergeAppendSystem(flags []string, appendix string) []string {
-	for i, f := range flags {
-		if f == "--append-system" && i+1 < len(flags) {
-			flags[i+1] = flags[i+1] + "\n\n" + appendix
-			return flags
-		}
-		if strings.HasPrefix(f, "--append-system=") {
-			flags[i] = f + "\n\n" + appendix
-			return flags
-		}
-	}
-	return append(flags, "--append-system", appendix)
 }
 
 // --- list -------------------------------------------------------------------
@@ -513,4 +487,99 @@ func cmdNotify(args []string) error {
 	}
 	a.LastSeen = time.Now().UTC()
 	return saveAgent(a)
+}
+
+// --- init / prompt ---------------------------------------------------------
+
+// cmdInit materializes the embedded default prompt templates into the
+// user's config dir so they can be edited. Idempotent; re-running it
+// skips existing files unless --force is given. Meant to be run once.
+func cmdInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	force := fs.Bool("force", false, "overwrite existing prompt files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	written, err := materializeDefaultPrompts(*force)
+	if err != nil {
+		return err
+	}
+	dir, _ := promptsDir()
+	if len(written) == 0 {
+		fmt.Printf("Prompts already exist at %s (use --force to overwrite).\n", dir)
+		return nil
+	}
+	fmt.Printf("Wrote %d prompt template(s) to %s:\n", len(written), dir)
+	for _, p := range written {
+		fmt.Printf("  %s\n", p)
+	}
+	fmt.Println("\nEdit these to customize each kind's behavior. `roster prompt show <kind>` renders one with placeholders substituted.")
+	return nil
+}
+
+// cmdPrompt handles `roster prompt <show|edit> <kind>`.
+func cmdPrompt(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: roster prompt <show|edit> <kind>")
+	}
+	sub := args[0]
+	switch sub {
+	case "show":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: roster prompt show <kind> [--id X --parent Y --description ...]")
+		}
+		kind := args[1]
+		fs := flag.NewFlagSet("show", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		id := fs.String("id", "example-"+kind, "placeholder id")
+		parent := fs.String("parent", "", "placeholder parent")
+		desc := fs.String("description", "(example description)", "placeholder description")
+		if err := fs.Parse(args[2:]); err != nil {
+			return err
+		}
+		out, err := renderPrompt(kind, promptData{ID: *id, Parent: *parent, Description: *desc})
+		if err != nil {
+			return err
+		}
+		fmt.Print(out)
+		return nil
+	case "edit":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: roster prompt edit <kind>")
+		}
+		kind := args[1]
+		if err := validateKind(kind); err != nil {
+			return err
+		}
+		dir, err := promptsDir()
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(dir, kind+".md")
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			// Materialize just this one from embedded default.
+			src, err := embeddedPrompts.ReadFile("prompts/" + kind + ".md")
+			if err != nil {
+				return fmt.Errorf("no built-in prompt for %q", kind)
+			}
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, src, 0o644); err != nil {
+				return err
+			}
+		}
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = "vi"
+		}
+		cmd := exec.Command(editor, path)
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	default:
+		return fmt.Errorf("prompt: unknown subcommand %q (want show|edit)", sub)
+	}
 }
