@@ -1,0 +1,516 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// --- spawn ------------------------------------------------------------------
+
+func cmdSpawn(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: roster spawn <id> [--kind K] [--parent P] [--description \"...\"] -- <camux-spawn-flags>")
+	}
+	id := args[0]
+	if err := validateID(id); err != nil {
+		return err
+	}
+
+	fs := flag.NewFlagSet("spawn", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	kind := fs.String("kind", "worker", "dispatcher | orchestrator | worker")
+	parent := fs.String("parent", "", "id of the agent that spawned this one")
+	description := fs.String("description", "", "rolling summary of what this agent is for / has done")
+	rawTimeout := fs.Duration("timeout", 90*time.Second, "how long to wait for the Claude TUI to become ready")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	camuxFlags := fs.Args() // everything after --
+
+	if err := validateKind(*kind); err != nil {
+		return err
+	}
+	if agentExists(id) {
+		return fmt.Errorf("spawn: agent %q already exists (use `roster resume %s` or `roster forget %s` first)", id, id, id)
+	}
+	if *parent != "" && !agentExists(*parent) {
+		return fmt.Errorf("spawn: --parent %q not in roster", *parent)
+	}
+
+	// Auto-inject a system prompt appendix so the spawned Claude knows its
+	// id and parent, and how to message back via `roster notify`.
+	systemAppendix := buildSystemAppendix(id, *parent, *kind)
+	if *parent != "" {
+		// Append our context to any user-provided --append-system, or add
+		// a fresh one. We detect --append-system to merge; otherwise add.
+		camuxFlags = mergeAppendSystem(camuxFlags, systemAppendix)
+	}
+
+	// Pick the amux session name. Matches the id directly — simple and
+	// `amux list` shows the human id.
+	session := id
+	spawnArgs := append([]string{"spawn", session}, camuxFlags...)
+	spawnArgs = append(spawnArgs, "--timeout", rawTimeout.String())
+
+	out, err := runCamux(spawnArgs...)
+	if err != nil {
+		return fmt.Errorf("spawn: camux spawn failed: %w", err)
+	}
+	target := strings.TrimSpace(strings.Split(out, "\n")[0])
+	if target == "" {
+		return fmt.Errorf("spawn: camux spawn returned empty target, stdout=%q", out)
+	}
+
+	// Pull the Claude session UUID via camux info (best-effort — if it
+	// fails, we still save the record without it; resume won't work but
+	// the record is still valid).
+	var sessionUUID, cwd string
+	if info, err := camuxInfo(target); err == nil {
+		sessionUUID = info.SessionID
+		cwd = info.Cwd
+	}
+
+	now := time.Now().UTC()
+	a := &Agent{
+		ID:          id,
+		Kind:        *kind,
+		Parent:      *parent,
+		Description: *description,
+		SessionUUID: sessionUUID,
+		SpawnArgs:   camuxFlags,
+		Cwd:         cwd,
+		Target:      target,
+		Created:     now,
+		LastSeen:    now,
+	}
+	if err := saveAgent(a); err != nil {
+		return err
+	}
+	fmt.Println(target)
+	return nil
+}
+
+// buildSystemAppendix returns the text roster injects into every spawned
+// agent's system prompt so the Claude inside knows its identity and how
+// to message its parent.
+func buildSystemAppendix(id, parent, kind string) string {
+	if parent == "" {
+		return fmt.Sprintf(
+			"You are roster agent %q (kind: %s). You have no parent. "+
+				"Other roster tools: `roster list`, `roster notify <id> \"<msg>\"`, `roster describe <id>`, `roster spawn <new-id> --parent %s ...`.",
+			id, kind, id)
+	}
+	return fmt.Sprintf(
+		"You are roster agent %q (kind: %s), reporting to agent %q. "+
+			"When you finish your task, hit an error, or need guidance, notify your parent with:\n"+
+			"  roster notify %s \"<your message>\"\n"+
+			"Do this via your Bash tool. Your parent will respond by sending you a new message (which appears as a new user turn here). "+
+			"You can also message siblings or other agents via `roster notify <id> \"<msg>\"`, but upward-to-parent is the main channel.",
+		id, kind, parent, parent)
+}
+
+// mergeAppendSystem walks the camux-spawn flags and concatenates roster's
+// systemAppendix onto any existing --append-system. If --append-system
+// isn't already present, it appends a new one.
+func mergeAppendSystem(flags []string, appendix string) []string {
+	for i, f := range flags {
+		if f == "--append-system" && i+1 < len(flags) {
+			flags[i+1] = flags[i+1] + "\n\n" + appendix
+			return flags
+		}
+		if strings.HasPrefix(f, "--append-system=") {
+			flags[i] = f + "\n\n" + appendix
+			return flags
+		}
+	}
+	return append(flags, "--append-system", appendix)
+}
+
+// --- list -------------------------------------------------------------------
+
+type listRow struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	Parent      string `json:"parent,omitempty"`
+	Target      string `json:"target,omitempty"`
+	Status      string `json:"status"`
+	Description string `json:"description,omitempty"`
+	Created     string `json:"created"`
+}
+
+func cmdList(args []string) error {
+	fs := flag.NewFlagSet("list", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	kind := fs.String("kind", "", "filter by kind")
+	parent := fs.String("parent", "", "filter by parent id")
+	status := fs.String("status", "", "filter by live status (ready, streaming, stopped, ...)")
+	asJSON := fs.Bool("json", false, "emit JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	all, err := listAgents()
+	if err != nil {
+		return err
+	}
+	var rows []listRow
+	for _, a := range all {
+		if *kind != "" && a.Kind != *kind {
+			continue
+		}
+		if *parent != "" && a.Parent != *parent {
+			continue
+		}
+		st := camuxStatus(a.Target)
+		if *status != "" && st != *status {
+			continue
+		}
+		rows = append(rows, listRow{
+			ID:          a.ID,
+			Kind:        a.Kind,
+			Parent:      a.Parent,
+			Target:      a.Target,
+			Status:      st,
+			Description: shortDesc(a.Description, 60),
+			Created:     a.Created.Format(time.RFC3339),
+		})
+	}
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(rows)
+	}
+	if len(rows) == 0 {
+		fmt.Println("(no agents)")
+		return nil
+	}
+	for _, r := range rows {
+		parent := "-"
+		if r.Parent != "" {
+			parent = r.Parent
+		}
+		fmt.Printf("%-20s  %-13s  parent=%-15s  status=%-10s  %s\n",
+			r.ID, r.Kind, parent, r.Status, r.Description)
+	}
+	return nil
+}
+
+func shortDesc(s string, n int) string {
+	s = strings.ReplaceAll(strings.TrimSpace(s), "\n", " ")
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+// --- describe ---------------------------------------------------------------
+
+func cmdDescribe(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: roster describe <id> [--json] [--tail N]")
+	}
+	id := args[0]
+	fs := flag.NewFlagSet("describe", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	asJSON := fs.Bool("json", false, "emit JSON")
+	tail := fs.Int("tail", 0, "if live, also include last N lines of the pane")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	a, err := loadAgent(id)
+	if err != nil {
+		return err
+	}
+	type out struct {
+		*Agent
+		Status string `json:"status"`
+		Tail   string `json:"tail,omitempty"`
+	}
+	o := out{Agent: a, Status: camuxStatus(a.Target)}
+	if *tail > 0 && (o.Status == "ready" || o.Status == "streaming" || o.Status == "starting") {
+		if tOut, err := runAmux("capture", a.Target, "--lines", fmt.Sprint(*tail)); err == nil {
+			o.Tail = tOut
+		}
+	}
+	if *asJSON {
+		return json.NewEncoder(os.Stdout).Encode(o)
+	}
+	fmt.Printf("id:          %s\n", a.ID)
+	fmt.Printf("kind:        %s\n", a.Kind)
+	if a.Parent != "" {
+		fmt.Printf("parent:      %s\n", a.Parent)
+	}
+	fmt.Printf("status:      %s\n", o.Status)
+	if a.Target != "" {
+		fmt.Printf("target:      %s\n", a.Target)
+	}
+	if a.SessionUUID != "" {
+		fmt.Printf("session_id:  %s\n", a.SessionUUID)
+	}
+	if a.Cwd != "" {
+		fmt.Printf("cwd:         %s\n", a.Cwd)
+	}
+	fmt.Printf("created:     %s\n", a.Created.Format(time.RFC3339))
+	if !a.LastSeen.IsZero() {
+		fmt.Printf("last_seen:   %s\n", a.LastSeen.Format(time.RFC3339))
+	}
+	if a.Description != "" {
+		fmt.Printf("description:\n  %s\n", strings.ReplaceAll(a.Description, "\n", "\n  "))
+	}
+	if o.Tail != "" {
+		fmt.Printf("---- tail (%d) ----\n%s\n", *tail, o.Tail)
+	}
+	return nil
+}
+
+// --- target -----------------------------------------------------------------
+
+func cmdTarget(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: roster target <id>")
+	}
+	a, err := loadAgent(args[0])
+	if err != nil {
+		return err
+	}
+	if a.Target == "" {
+		return fmt.Errorf("target: %s has no known target (stopped)", a.ID)
+	}
+	fmt.Println(a.Target)
+	return nil
+}
+
+// --- tree -------------------------------------------------------------------
+
+func cmdTree(args []string) error {
+	all, err := listAgents()
+	if err != nil {
+		return err
+	}
+	// Find roots (parent == "" or parent not in the set).
+	ids := make(map[string]bool, len(all))
+	for _, a := range all {
+		ids[a.ID] = true
+	}
+	var roots []*Agent
+	for _, a := range all {
+		if a.Parent == "" || !ids[a.Parent] {
+			roots = append(roots, a)
+		}
+	}
+	if len(roots) == 0 {
+		fmt.Println("(no agents)")
+		return nil
+	}
+	for _, r := range roots {
+		printTree(r, all, "", true)
+	}
+	return nil
+}
+
+func printTree(a *Agent, all []*Agent, prefix string, isRoot bool) {
+	status := camuxStatus(a.Target)
+	line := fmt.Sprintf("%s (%s) [%s]", a.ID, a.Kind, status)
+	if a.Description != "" {
+		line += "  — " + shortDesc(a.Description, 50)
+	}
+	if isRoot {
+		fmt.Println(line)
+	} else {
+		fmt.Println(prefix + "└── " + line)
+	}
+	kids := childrenOf(a.ID, all)
+	for i, k := range kids {
+		newPrefix := prefix
+		if isRoot {
+			newPrefix = ""
+		} else {
+			newPrefix = prefix + "    "
+		}
+		_ = i
+		printTree(k, all, newPrefix, false)
+	}
+}
+
+// --- update -----------------------------------------------------------------
+
+func cmdUpdate(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: roster update <id> [--description \"...\"] [--append \"...\"]")
+	}
+	id := args[0]
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	description := fs.String("description", "", "replace description with this value")
+	appendStr := fs.String("append", "", "append this text to description (with newline separator)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	a, err := loadAgent(id)
+	if err != nil {
+		return err
+	}
+	if *description != "" {
+		a.Description = *description
+	}
+	if *appendStr != "" {
+		if a.Description != "" {
+			a.Description += "\n"
+		}
+		a.Description += *appendStr
+	}
+	if *description == "" && *appendStr == "" {
+		return fmt.Errorf("update: need --description or --append")
+	}
+	a.LastSeen = time.Now().UTC()
+	return saveAgent(a)
+}
+
+// --- search -----------------------------------------------------------------
+
+func cmdSearch(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: roster search <query>")
+	}
+	query := strings.ToLower(strings.Join(args, " "))
+	all, err := listAgents()
+	if err != nil {
+		return err
+	}
+	matches := 0
+	for _, a := range all {
+		if strings.Contains(strings.ToLower(a.Description), query) ||
+			strings.Contains(strings.ToLower(a.ID), query) {
+			fmt.Printf("%-20s  %-13s  %s\n", a.ID, a.Kind, shortDesc(a.Description, 80))
+			matches++
+		}
+	}
+	if matches == 0 {
+		return fmt.Errorf("no matches for %q", query)
+	}
+	return nil
+}
+
+// --- resume -----------------------------------------------------------------
+
+func cmdResume(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: roster resume <id>")
+	}
+	id := args[0]
+	a, err := loadAgent(id)
+	if err != nil {
+		return err
+	}
+	// If already live, just print the target.
+	if camuxStatus(a.Target) == "ready" {
+		fmt.Println(a.Target)
+		return nil
+	}
+	session := a.ID
+	flags := append([]string{}, a.SpawnArgs...)
+	if a.SessionUUID != "" {
+		flags = append(flags, "--resume", a.SessionUUID)
+	}
+	spawnArgs := append([]string{"spawn", session}, flags...)
+	out, err := runCamux(spawnArgs...)
+	if err != nil {
+		return fmt.Errorf("resume: camux spawn failed: %w", err)
+	}
+	target := strings.TrimSpace(strings.Split(out, "\n")[0])
+	a.Target = target
+	a.LastSeen = time.Now().UTC()
+	if err := saveAgent(a); err != nil {
+		return err
+	}
+	fmt.Println(target)
+	return nil
+}
+
+// --- stop -------------------------------------------------------------------
+
+func cmdStop(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: roster stop <id>")
+	}
+	id := args[0]
+	a, err := loadAgent(id)
+	if err != nil {
+		return err
+	}
+	if a.Target != "" {
+		// Extract session name from target (session:window) — amux kill
+		// on the session kills the whole workspace.
+		sess := strings.SplitN(a.Target, ":", 2)[0]
+		_, _ = runAmux("kill", sess) // ignore error: might already be dead
+	}
+	a.Target = ""
+	a.LastSeen = time.Now().UTC()
+	return saveAgent(a)
+}
+
+// --- forget -----------------------------------------------------------------
+
+func cmdForget(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: roster forget <id>")
+	}
+	id := args[0]
+	a, err := loadAgent(id)
+	if err != nil {
+		return err
+	}
+	if a.Target != "" {
+		sess := strings.SplitN(a.Target, ":", 2)[0]
+		_, _ = runAmux("kill", sess)
+	}
+	return deleteAgent(id)
+}
+
+// --- notify -----------------------------------------------------------------
+
+func cmdNotify(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: roster notify <to-id> \"<message>\" [--from <id>] [--wait-ready 30s]")
+	}
+	to := args[0]
+	msg := args[1]
+	fs := flag.NewFlagSet("notify", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	from := fs.String("from", "", "id of the sender (optional; prepended to the delivered message)")
+	waitReady := fs.Duration("wait-ready", 30*time.Second, "how long to wait for recipient to be ready")
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
+	a, err := loadAgent(to)
+	if err != nil {
+		return err
+	}
+	if a.Target == "" {
+		return fmt.Errorf("notify: %s has no target (stopped). Run `roster resume %s` first.", to, to)
+	}
+	if err := waitForReady(a.Target, *waitReady); err != nil {
+		return fmt.Errorf("notify: recipient %s not ready: %w", to, err)
+	}
+	// Format the delivered message.
+	delivered := msg
+	if *from != "" {
+		delivered = fmt.Sprintf("[from %s]\n\n%s", *from, msg)
+	}
+	// Paste + submit directly via amux — camux `ask` would block waiting
+	// for a reply, which isn't what notify semantics imply (fire-and-forget
+	// arrival). We've already waited for ready via waitForReady above.
+	cmd := exec.Command(amuxBin, "paste", a.Target, "--submit")
+	cmd.Stdin = bytes.NewReader([]byte(delivered))
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("notify: paste failed: %s", strings.TrimSpace(errb.String()))
+	}
+	a.LastSeen = time.Now().UTC()
+	return saveAgent(a)
+}
