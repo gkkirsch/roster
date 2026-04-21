@@ -51,7 +51,7 @@ Execute the task your parent gives you. Be focused. Report clearly.
 - **Do NOT spawn your own sub-workers** unless your parent explicitly says so.
 - Always include `--from {{.ID}}` in your notify calls so the recipient knows who's talking.
 - If you've done ~10 tool calls without a clear milestone, send a progress notify to your parent.
-- Never `roster forget`, `roster stop`, or `roster kill` anything.
+- Never `roster forget` or `roster stop` any agent.
 - Stay in scope. If the task is larger than expected, notify with `stuck:` and ask whether to narrow or split.
 
 ## Expected flow

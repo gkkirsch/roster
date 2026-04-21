@@ -52,28 +52,33 @@ func validateKind(kind string) error {
 
 // --- storage -----------------------------------------------------------------
 
-// storeDir returns the per-user agent records directory, creating it if
-// missing. Honors XDG_DATA_HOME, then $HOME/.local/share.
-func storeDir() (string, error) {
-	if d := os.Getenv("ROSTER_DIR"); d != "" {
+// rosterPath resolves a per-user roster subdir, honoring an env override,
+// then XDG, then $HOME/<xdgDefault>. Creates the directory.
+// e.g. rosterPath("ROSTER_DIR", "XDG_DATA_HOME", ".local/share", "agents").
+func rosterPath(envOverride, xdgVar, xdgDefault, sub string) (string, error) {
+	if d := os.Getenv(envOverride); d != "" {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return "", err
 		}
 		return d, nil
 	}
-	base := os.Getenv("XDG_DATA_HOME")
+	base := os.Getenv(xdgVar)
 	if base == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return "", err
 		}
-		base = filepath.Join(home, ".local", "share")
+		base = filepath.Join(home, xdgDefault)
 	}
-	dir := filepath.Join(base, "roster", "agents")
+	dir := filepath.Join(base, "roster", sub)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return dir, nil
+}
+
+func storeDir() (string, error) {
+	return rosterPath("ROSTER_DIR", "XDG_DATA_HOME", ".local/share", "agents")
 }
 
 func agentPath(id string) (string, error) {

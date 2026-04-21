@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -26,7 +25,7 @@ func cmdSpawn(args []string) error {
 
 	fs := flag.NewFlagSet("spawn", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	kind := fs.String("kind", "worker", "dispatcher | orchestrator | worker")
+	kind := fs.String("kind", "worker", strings.Join(KnownKinds, " | "))
 	parent := fs.String("parent", "", "id of the agent that spawned this one")
 	description := fs.String("description", "", "rolling summary of what this agent is for / has done")
 	rawTimeout := fs.Duration("timeout", 90*time.Second, "how long to wait for the Claude TUI to become ready")
@@ -45,10 +44,6 @@ func cmdSpawn(args []string) error {
 		return fmt.Errorf("spawn: --parent %q not in roster", *parent)
 	}
 
-	// Render the lean system prompt for this kind (dispatcher / orchestrator
-	// / worker). The template replaces the default Claude Code prompt
-	// entirely — this is why workers are sharp rather than distracted by
-	// memory discovery, CLAUDE.md auto-loading, etc.
 	systemPrompt, err := renderPrompt(*kind, promptData{
 		ID:          id,
 		Parent:      *parent,
@@ -58,13 +53,11 @@ func cmdSpawn(args []string) error {
 		return fmt.Errorf("spawn: render system prompt: %w", err)
 	}
 
-	// Prepend --system-prompt so any user-provided --system-prompt in
-	// camuxFlags wins (later flag overrides in the claude CLI).
+	// Prepend --system-prompt so any user-provided one later in camuxFlags
+	// wins (claude's CLI: later flag overrides earlier).
 	baseFlags := []string{"--system-prompt", systemPrompt}
 	camuxFlags = append(baseFlags, camuxFlags...)
 
-	// Pick the amux session name. Matches the id directly — simple and
-	// `amux list` shows the human id.
 	session := id
 	spawnArgs := append([]string{"spawn", session}, camuxFlags...)
 	spawnArgs = append(spawnArgs, "--timeout", rawTimeout.String())
@@ -492,8 +485,7 @@ func cmdNotify(args []string) error {
 // --- init / prompt ---------------------------------------------------------
 
 // cmdInit materializes the embedded default prompt templates into the
-// user's config dir so they can be edited. Idempotent; re-running it
-// skips existing files unless --force is given. Meant to be run once.
+// user's config dir. Idempotent; --force overwrites existing files.
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -530,6 +522,9 @@ func cmdPrompt(args []string) error {
 			return fmt.Errorf("usage: roster prompt show <kind> [--id X --parent Y --description ...]")
 		}
 		kind := args[1]
+		if err := validateKind(kind); err != nil {
+			return err
+		}
 		fs := flag.NewFlagSet("show", flag.ContinueOnError)
 		fs.SetOutput(io.Discard)
 		id := fs.String("id", "example-"+kind, "placeholder id")
@@ -552,23 +547,9 @@ func cmdPrompt(args []string) error {
 		if err := validateKind(kind); err != nil {
 			return err
 		}
-		dir, err := promptsDir()
+		path, _, err := ensurePromptOnDisk(kind, false)
 		if err != nil {
 			return err
-		}
-		path := filepath.Join(dir, kind+".md")
-		if _, err := os.Stat(path); os.IsNotExist(err) {
-			// Materialize just this one from embedded default.
-			src, err := embeddedPrompts.ReadFile("prompts/" + kind + ".md")
-			if err != nil {
-				return fmt.Errorf("no built-in prompt for %q", kind)
-			}
-			if err := os.MkdirAll(dir, 0o755); err != nil {
-				return err
-			}
-			if err := os.WriteFile(path, src, 0o644); err != nil {
-				return err
-			}
 		}
 		editor := os.Getenv("EDITOR")
 		if editor == "" {

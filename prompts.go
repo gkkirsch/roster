@@ -19,40 +19,38 @@ type promptData struct {
 	Description string
 }
 
-// promptsDir returns the per-user writable prompts directory under XDG_CONFIG_HOME
-// (or $HOME/.config). Edits here override the embedded defaults.
+// Edits in promptsDir() override the embedded defaults.
 func promptsDir() (string, error) {
-	if d := os.Getenv("ROSTER_PROMPTS_DIR"); d != "" {
-		return d, nil
-	}
-	base := os.Getenv("XDG_CONFIG_HOME")
-	if base == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		base = filepath.Join(home, ".config")
-	}
-	return filepath.Join(base, "roster", "prompts"), nil
+	return rosterPath("ROSTER_PROMPTS_DIR", "XDG_CONFIG_HOME", ".config", "prompts")
 }
 
-// loadPromptTemplate reads the raw template text for a kind, preferring
-// the user-editable file on disk, falling back to the embedded default.
+// readEmbeddedPrompt returns the built-in template for a kind or a
+// friendly error if none is bundled.
+func readEmbeddedPrompt(kind string) ([]byte, error) {
+	b, err := embeddedPrompts.ReadFile("prompts/" + kind + ".md")
+	if err != nil {
+		return nil, fmt.Errorf("no built-in prompt for kind %q", kind)
+	}
+	return b, nil
+}
+
+// loadPromptTemplate prefers the user-editable file on disk, falling back
+// to the embedded default.
 func loadPromptTemplate(kind string) (string, error) {
 	dir, err := promptsDir()
 	if err != nil {
 		return "", err
 	}
-	diskPath := filepath.Join(dir, kind+".md")
-	if b, err := os.ReadFile(diskPath); err == nil {
+	b, err := os.ReadFile(filepath.Join(dir, kind+".md"))
+	if err == nil {
 		return string(b), nil
-	} else if !os.IsNotExist(err) {
+	}
+	if !os.IsNotExist(err) {
 		return "", err
 	}
-	// Fall back to embedded default.
-	b, err := embeddedPrompts.ReadFile("prompts/" + kind + ".md")
+	b, err = readEmbeddedPrompt(kind)
 	if err != nil {
-		return "", fmt.Errorf("no built-in prompt for kind %q", kind)
+		return "", err
 	}
 	return string(b), nil
 }
@@ -77,30 +75,39 @@ func renderPrompt(kind string, data promptData) (string, error) {
 	return buf.String(), nil
 }
 
-// materializeDefaultPrompts copies the embedded defaults into the user's
-// prompts directory. Used by `roster init`. --force overwrites existing files.
-func materializeDefaultPrompts(force bool) ([]string, error) {
+// ensurePromptOnDisk writes the embedded default for kind to disk if it's
+// missing (or if force is set). Returns the destination path and whether
+// a write happened.
+func ensurePromptOnDisk(kind string, force bool) (path string, wrote bool, err error) {
 	dir, err := promptsDir()
 	if err != nil {
-		return nil, err
+		return "", false, err
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
+	dst := filepath.Join(dir, kind+".md")
+	if _, err := os.Stat(dst); err == nil && !force {
+		return dst, false, nil
 	}
+	src, err := readEmbeddedPrompt(kind)
+	if err != nil {
+		return dst, false, err
+	}
+	if err := os.WriteFile(dst, src, 0o644); err != nil {
+		return dst, false, err
+	}
+	return dst, true, nil
+}
+
+// materializeDefaultPrompts writes each known kind via ensurePromptOnDisk.
+func materializeDefaultPrompts(force bool) ([]string, error) {
 	var written []string
 	for _, kind := range KnownKinds {
-		dst := filepath.Join(dir, kind+".md")
-		if _, err := os.Stat(dst); err == nil && !force {
-			continue // keep user's edits
-		}
-		src, err := embeddedPrompts.ReadFile("prompts/" + kind + ".md")
+		path, wrote, err := ensurePromptOnDisk(kind, force)
 		if err != nil {
 			return written, err
 		}
-		if err := os.WriteFile(dst, src, 0o644); err != nil {
-			return written, err
+		if wrote {
+			written = append(written, path)
 		}
-		written = append(written, dst)
 	}
 	return written, nil
 }
