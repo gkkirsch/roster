@@ -59,6 +59,16 @@ func cmdSpawn(args []string) error {
 	camuxFlags = append(baseFlags, camuxFlags...)
 
 	session := id
+
+	// Isolate this agent's ~/.claude if it's an orchestrator (own dir) or
+	// a worker (inherit its orchestrator's dir). Pre-creates the tmux
+	// session and sets CLAUDE_CONFIG_DIR on it so the upcoming
+	// new-window picks it up. Dispatchers skip this and use the user's
+	// global ~/.claude.
+	if _, err := prepareClaudeIsolation(*kind, id, *parent, session); err != nil {
+		return fmt.Errorf("spawn: claude dir isolation: %w", err)
+	}
+
 	spawnArgs := append([]string{"spawn", session}, camuxFlags...)
 	spawnArgs = append(spawnArgs, "--timeout", rawTimeout.String())
 
@@ -379,6 +389,9 @@ func cmdResume(args []string) error {
 		return nil
 	}
 	session := a.ID
+	if _, err := prepareClaudeIsolation(a.Kind, a.ID, a.Parent, session); err != nil {
+		return fmt.Errorf("resume: claude dir isolation: %w", err)
+	}
 	flags := append([]string{}, a.SpawnArgs...)
 	if a.SessionUUID != "" {
 		flags = append(flags, "--resume", a.SessionUUID)
