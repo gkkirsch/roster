@@ -463,10 +463,20 @@ func cmdNotify(args []string) error {
 	if err := waitForReady(a.Target, *waitReady); err != nil {
 		return fmt.Errorf("notify: recipient %s not ready: %w", to, err)
 	}
-	// Format the delivered message.
+	// Format the delivered message. When the sender is a registered
+	// roster agent, we also append a reply-protocol footer. Without it
+	// the recipient tends to answer as plain text in its own pane and
+	// the sender never hears back.
 	delivered := msg
 	if *from != "" {
-		delivered = fmt.Sprintf("[from %s]\n\n%s", *from, msg)
+		footer := ""
+		if agentExists(*from) {
+			footer = fmt.Sprintf(
+				"\n\n—\nTo respond, end your turn with: `roster notify %s \"<your reply>\" --from <your-agent-id>`.\nPlain text alone does NOT reach %s.",
+				*from, *from,
+			)
+		}
+		delivered = fmt.Sprintf("[from %s]\n\n%s%s", *from, msg, footer)
 	}
 	// Paste + submit directly via amux — camux `ask` would block waiting
 	// for a reply, which isn't what notify semantics imply (fire-and-forget
