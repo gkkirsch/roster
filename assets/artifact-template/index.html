@@ -8,5 +8,9 @@
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
+    <!-- fleetview design-mode inspector. Dormant until the dashboard
+         (parent frame) toggles it via postMessage. Served by fleetview
+         so improvements roll out without re-scaffolding artifacts. -->
+    <script src="http://localhost:8080/__inspector.js" defer></script>
   </body>
 </html>
