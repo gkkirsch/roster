@@ -82,9 +82,11 @@ func setTmuxSessionEnv(session, key, value string) error {
 }
 
 // prepareClaudeIsolation does the full dance for one agent: resolve
-// effective claude dir, create the tmux session if needed, and set
-// CLAUDE_CONFIG_DIR on it. Returns the dir that will be used (empty
-// means no override was applied). Safe to call even when the agent
+// effective claude dir, create the tmux session if needed, set
+// CLAUDE_CONFIG_DIR on it, seed onboarding state, and PATH-prepend
+// the security shim so per-orch keychain ops land on the user's
+// canonical entry. Returns the dir that will be used (empty means
+// no override was applied). Safe to call even when the agent
 // doesn't need isolation.
 func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) {
 	dir, err := claudeDirFor(kind, id, parentID)
@@ -94,10 +96,30 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	if dir == "" {
 		return "", nil
 	}
+	// Fail loud if the user hasn't logged in to Claude on this
+	// machine yet — otherwise the orch would boot, then crash on
+	// first API call. Better error: "log in first."
+	if !userKeychainHasClaudeCreds() {
+		return "", fmt.Errorf("no Claude credentials found in keychain; log in with `claude` once first")
+	}
+	if kind == "orchestrator" {
+		if err := seedOrchClaudeDir(dir); err != nil {
+			return "", fmt.Errorf("seed orch claude dir: %w", err)
+		}
+	}
+	shim, err := installSecurityShim()
+	if err != nil {
+		return "", fmt.Errorf("install security shim: %w", err)
+	}
 	if err := ensureAmuxSession(session); err != nil {
 		return "", err
 	}
 	if err := setTmuxSessionEnv(session, "CLAUDE_CONFIG_DIR", dir); err != nil {
+		return "", err
+	}
+	shimDir := filepath.Dir(shim)
+	pathVal := shimDir + ":" + os.Getenv("PATH")
+	if err := setTmuxSessionEnv(session, "PATH", pathVal); err != nil {
 		return "", err
 	}
 	return dir, nil

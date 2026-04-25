@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# security — roster wrapper.
+#
+# macOS Claude Code names its keychain entries `Claude Code-credentials`
+# (default ~/.claude) or `Claude Code-credentials-<sha256[:8]>` when
+# CLAUDE_CONFIG_DIR is set. That gives every per-orch dir its OWN
+# entry, which means each orch refreshes OAuth tokens independently —
+# and refresh-token rotation eventually breaks one of them.
+#
+# This shim strips the `-<hex>` suffix so every orch's keychain op
+# lands on the same `Claude Code-credentials` entry as the user's main
+# session. One source of truth, no rotation races.
+#
+# Anything not matching `^Claude Code(-[a-z-]+-oauth)?-credentials-<hex>$`
+# passes through unchanged — cocoapods/xcrun/etc. work normally.
+set -euo pipefail
+
+args=("$@")
+n=${#args[@]}
+for ((i=0; i<n; i++)); do
+  if [[ "${args[i]}" == "-s" ]] && (( i+1 < n )); then
+    s="${args[i+1]}"
+    if [[ "$s" =~ ^(Claude\ Code(-[a-z-]+-oauth)?-credentials)-[a-f0-9]+$ ]]; then
+      args[i+1]="${BASH_REMATCH[1]}"
+    fi
+  fi
+done
+
+# Hand off to the real `security`. Hard-coded path so we never recurse
+# into ourselves regardless of PATH ordering.
+exec /usr/bin/security "${args[@]}"
