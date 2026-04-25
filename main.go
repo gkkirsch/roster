@@ -97,6 +97,8 @@ func main() {
 		err = cmdInit(args)
 	case "prompt":
 		err = cmdPrompt(args)
+	case "artifact":
+		err = cmdArtifact(args)
 	default:
 		fmt.Fprintf(os.Stderr, "roster: unknown command %q\n\n", cmd)
 		fmt.Fprint(os.Stderr, usageText)
