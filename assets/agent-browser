@@ -11,9 +11,29 @@
 # falls back to `npx -y agent-browser` if nothing is installed globally.
 set -euo pipefail
 
-if [[ -z "${AGENT_BROWSER_CDP:-}" ]]; then
-  echo "agent-browser: AGENT_BROWSER_CDP is not set — this shell isn't inside a roster space, or roster failed to set it. Refusing to run." >&2
+# Resolve the real agent-browser binary. roster's installBrowserWrapper
+# wrote its path to a sidecar at install time (so we don't have to
+# discover it dynamically and risk recursing into our own symlink).
+# Resolve $0 through any symlinks first — when invoked via
+# ~/.local/bin/agent-browser the sidecar lives next to the canonical
+# script, not next to the symlink.
+self_resolved=$(readlink -f "$0" 2>/dev/null || python3 -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$0")
+self_dir=$(cd -- "$(dirname -- "$self_resolved")" && pwd)
+real=""
+sidecar="$self_dir/.agent-browser-real"
+if [[ -f "$sidecar" ]]; then
+  real=$(< "$sidecar")
+fi
+if [[ ! -x "$real" ]]; then
+  echo "agent-browser: real binary not found (sidecar at $sidecar). Re-run \`roster spawn\` or reinstall agent-browser." >&2
   exit 2
+fi
+
+# Outside a roster space (no AGENT_BROWSER_CDP), pass through unchanged
+# so user's main shell sees vanilla agent-browser. Only roster orchs
+# get the enforced --cdp + blocked subcommands.
+if [[ -z "${AGENT_BROWSER_CDP:-}" ]]; then
+  exec "$real" "$@"
 fi
 
 case "${1:-}" in
@@ -43,21 +63,4 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-self_dir=$(cd -- "$(dirname -- "$0")" && pwd)
-real=""
-IFS=':' read -ra path_parts <<< "${PATH:-}"
-for dir in "${path_parts[@]}"; do
-  [[ -z "$dir" ]] && continue
-  [[ "$dir" == "$self_dir" ]] && continue
-  cand="$dir/agent-browser"
-  if [[ -x "$cand" ]]; then
-    real="$cand"
-    break
-  fi
-done
-
-if [[ -n "$real" ]]; then
-  exec "$real" --cdp "$AGENT_BROWSER_CDP" "${filtered[@]}"
-fi
-
-exec npx --quiet -y agent-browser --cdp "$AGENT_BROWSER_CDP" "${filtered[@]}"
+exec "$real" --cdp "$AGENT_BROWSER_CDP" "${filtered[@]}"
