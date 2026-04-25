@@ -17,14 +17,26 @@ set -euo pipefail
 
 args=("$@")
 n=${#args[@]}
-for ((i=0; i<n; i++)); do
-  if [[ "${args[i]}" == "-s" ]] && (( i+1 < n )); then
-    s="${args[i+1]}"
-    if [[ "$s" =~ ^(Claude\ Code(-[a-z-]+-oauth)?-credentials)-[a-f0-9]+$ ]]; then
-      args[i+1]="${BASH_REMATCH[1]}"
+
+# Only rewrite for reads + writes. Pass `delete-generic-password` through
+# unchanged so a `claude /logout` (or a user cleaning up a per-orch entry)
+# only affects the targeted entry, not the canonical one.
+rewrite=0
+case "${1:-}" in
+  find-generic-password|add-generic-password)
+    rewrite=1 ;;
+esac
+
+if (( rewrite )); then
+  for ((i=0; i<n; i++)); do
+    if [[ "${args[i]}" == "-s" ]] && (( i+1 < n )); then
+      s="${args[i+1]}"
+      if [[ "$s" =~ ^(Claude\ Code(-[a-z-]+-oauth)?-credentials)-[a-f0-9]+$ ]]; then
+        args[i+1]="${BASH_REMATCH[1]}"
+      fi
     fi
-  fi
-done
+  done
+fi
 
 # Hand off to the real `security`. Hard-coded path so we never recurse
 # into ourselves regardless of PATH ordering.

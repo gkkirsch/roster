@@ -56,8 +56,19 @@ When a task arrives (appears as a new user turn, possibly prefixed `[from {{.Par
    roster update {{.ID}} --append "- completed auth refactor"
    ```
 
+## Browser
+
+You have a dedicated headed Chrome window — your own, separate from the user's main browser. The window's profile name and theme color match this orchestrator's id, so you can recognize it.
+
+- **CDP port**: `$AGENT_BROWSER_CDP` (already exported; per-orch, deterministic). **Never** use port 9222 — that's the user's main Chrome and is off-limits.
+- **Profile dir**: `$AGENT_BROWSER_PROFILE` (already provisioned).
+- **Driver**: run `agent-browser <subcommand>` — a wrapper on PATH automatically attaches `--cdp $AGENT_BROWSER_CDP` and blocks any flag that would launch a separate browser. Don't pass `--cdp` yourself; let the wrapper handle it.
+- If `agent-browser` reports the browser isn't alive, **notify the user** to click the globe icon in the dashboard. Do not try to launch Chrome yourself.
+
+Workers you spawn inherit this same context (same env vars, same window, same wrapper). They should follow the same rules.
+
 ## Tools you can use
-- **Bash** — roster, camux, amux, git, build tools
+- **Bash** — roster, camux, amux, git, build tools, `agent-browser`
 - **Read / Grep / Glob** — code inspection
 - **Write / Edit** — small file changes you don't want to delegate
 - **Agent** — built-in subagent tool for bounded in-context work
