@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# agent-browser — roster wrapper.
+#
+# Forces every invocation through the per-space CDP port so an agent can't
+# accidentally launch a separate browser or talk to the wrong one. Strips
+# user-supplied --cdp / --profile / --session / --executable-path /
+# --auto-connect so they can't override us. Blocks subcommands that would
+# escape isolation (`connect`, `dashboard`, `doctor`).
+#
+# Looks up the real `agent-browser` binary on PATH (skipping ourselves);
+# falls back to `npx -y agent-browser` if nothing is installed globally.
+set -euo pipefail
+
+if [[ -z "${AGENT_BROWSER_CDP:-}" ]]; then
+  echo "agent-browser: AGENT_BROWSER_CDP is not set — this shell isn't inside a roster space, or roster failed to set it. Refusing to run." >&2
+  exit 2
+fi
+
+case "${1:-}" in
+  connect|dashboard|doctor)
+    echo "agent-browser: subcommand '$1' is blocked inside roster spaces (would launch / probe a separate browser)." >&2
+    exit 2
+    ;;
+esac
+
+filtered=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cdp|--profile|--session|--executable-path)
+      shift
+      [[ $# -gt 0 ]] && shift
+      ;;
+    --cdp=*|--profile=*|--session=*|--executable-path=*)
+      shift
+      ;;
+    --auto-connect)
+      shift
+      ;;
+    *)
+      filtered+=("$1")
+      shift
+      ;;
+  esac
+done
+
+self_dir=$(cd -- "$(dirname -- "$0")" && pwd)
+real=""
+IFS=':' read -ra path_parts <<< "${PATH:-}"
+for dir in "${path_parts[@]}"; do
+  [[ -z "$dir" ]] && continue
+  [[ "$dir" == "$self_dir" ]] && continue
+  cand="$dir/agent-browser"
+  if [[ -x "$cand" ]]; then
+    real="$cand"
+    break
+  fi
+done
+
+if [[ -n "$real" ]]; then
+  exec "$real" --cdp "$AGENT_BROWSER_CDP" "${filtered[@]}"
+fi
+
+exec npx --quiet -y agent-browser --cdp "$AGENT_BROWSER_CDP" "${filtered[@]}"

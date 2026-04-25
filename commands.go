@@ -68,6 +68,9 @@ func cmdSpawn(args []string) error {
 	if _, err := prepareClaudeIsolation(*kind, id, *parent, session); err != nil {
 		return fmt.Errorf("spawn: claude dir isolation: %w", err)
 	}
+	if _, err := prepareBrowserIsolation(*kind, id, *parent, session); err != nil {
+		return fmt.Errorf("spawn: browser env: %w", err)
+	}
 
 	spawnArgs := append([]string{"spawn", session}, camuxFlags...)
 	spawnArgs = append(spawnArgs, "--timeout", rawTimeout.String())
@@ -391,6 +394,9 @@ func cmdResume(args []string) error {
 	session := a.ID
 	if _, err := prepareClaudeIsolation(a.Kind, a.ID, a.Parent, session); err != nil {
 		return fmt.Errorf("resume: claude dir isolation: %w", err)
+	}
+	if _, err := prepareBrowserIsolation(a.Kind, a.ID, a.Parent, session); err != nil {
+		return fmt.Errorf("resume: browser env: %w", err)
 	}
 	flags := append([]string{}, a.SpawnArgs...)
 	if a.SessionUUID != "" {
