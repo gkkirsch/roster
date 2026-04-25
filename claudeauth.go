@@ -38,6 +38,9 @@ var securityShim []byte
 //go:embed assets/skill-agent-browser.md
 var skillAgentBrowser []byte
 
+//go:embed assets/skill-artifact.md
+var skillArtifact []byte
+
 // installSecurityShim writes the shim into <bin>/security and ALSO
 // symlinks it from ~/.local/bin/security so it lands on the user's
 // regular PATH ahead of /usr/bin/security. tmux set-environment
@@ -130,24 +133,25 @@ func seedOrchClaudeDir(orchDir string) error {
 	if err := seedSettingsJSON(orchDir); err != nil {
 		return err
 	}
-	return seedAgentBrowserSkill(orchDir)
+	if err := seedSkill(orchDir, "agent-browser", skillAgentBrowser); err != nil {
+		return err
+	}
+	return seedSkill(orchDir, "artifact", skillArtifact)
 }
 
-// seedAgentBrowserSkill writes the agent-browser skill into the per-orch
-// skills dir if missing or out of date. The skill auto-loads on
-// browser-related tasks (`hidden: true`) and overrides the upstream
-// vercel-labs/agent-browser instructions with roster-specific rules
-// (must use $AGENT_BROWSER_CDP, never 9222, never run `install`).
-func seedAgentBrowserSkill(orchDir string) error {
-	dir := filepath.Join(orchDir, "skills", "agent-browser")
+// seedSkill writes a roster-bundled skill into <orch_dir>/skills/<name>/
+// SKILL.md. Idempotent: skips writing when on-disk content matches the
+// embedded copy. Skills with `hidden: true` auto-load on intent match.
+func seedSkill(orchDir, name string, content []byte) error {
+	dir := filepath.Join(orchDir, "skills", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	target := filepath.Join(dir, "SKILL.md")
-	if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, skillAgentBrowser) {
+	if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, content) {
 		return nil
 	}
-	return os.WriteFile(target, skillAgentBrowser, 0o644)
+	return os.WriteFile(target, content, 0o644)
 }
 
 func seedClaudeJSON(orchDir string) error {
