@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -115,9 +116,17 @@ const scheduleUsageText = `usage:
   roster schedule list <orch>
          List durable scheduled tasks for an orch.
 
-  roster schedule create <orch> --cron "<expr>" --prompt "<text>" [--no-recurring]
-         Add a task to <orch>'s scheduled_tasks.json. Recurring by default
-         (matches Claude Code's CronCreate semantics).
+  roster schedule create <orch> --prompt "<text>" <when>
+         Add a task to <orch>'s scheduled_tasks.json.
+
+         <when> is one of:
+           --cron "<expr>"           explicit 5-field cron expression
+           --daily-at "11:00,15:00"  multiple times each day, comma-separated
+           --once "2026-04-26T17:00" fire once at a specific local time
+                                     (auto-deletes after firing)
+
+         Recurring by default for --cron and --daily-at; --once forces
+         recurring=false.
 
   roster schedule delete <orch> <task-id>
          Remove a task by id. ids are 8 hex chars (see 'list').
@@ -164,21 +173,28 @@ func cmdScheduleList(args []string) error {
 
 func cmdScheduleCreate(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: roster schedule create <orch> --cron \"<expr>\" --prompt \"<text>\" [--no-recurring]")
+		return fmt.Errorf("usage: roster schedule create <orch> --prompt \"<text>\" --cron|--daily-at|--once <value>")
 	}
 	orch := args[0]
 	fs := flag.NewFlagSet("schedule create", flag.ContinueOnError)
 	cron := fs.String("cron", "", "cron expression, e.g. \"0 9 * * 1-5\"")
+	dailyAt := fs.String("daily-at", "", "comma-separated daily times, e.g. \"11:00,15:00,17:00\"")
+	once := fs.String("once", "", "one-shot ISO local time, e.g. \"2026-04-26T17:00\"")
 	prompt := fs.String("prompt", "", "prompt the orch will receive when the task fires")
-	noRecurring := fs.Bool("no-recurring", false, "fire once at the next match instead of every match")
+	noRecurring := fs.Bool("no-recurring", false, "force recurring=false on --cron / --daily-at (--once is always one-shot)")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	*cron = strings.TrimSpace(*cron)
 	*prompt = strings.TrimSpace(*prompt)
-	if *cron == "" || *prompt == "" {
-		return fmt.Errorf("--cron and --prompt are required")
+	if *prompt == "" {
+		return fmt.Errorf("--prompt is required")
 	}
+
+	cronExpr, recurring, err := resolveScheduleWhen(*cron, *dailyAt, *once, *noRecurring)
+	if err != nil {
+		return fmt.Errorf("schedule create: %w", err)
+	}
+
 	if _, err := loadAgent(orch); err != nil {
 		return fmt.Errorf("schedule create: %w", err)
 	}
@@ -188,10 +204,10 @@ func cmdScheduleCreate(args []string) error {
 	}
 	t := scheduleTask{
 		ID:        newScheduleTaskID(),
-		Cron:      *cron,
+		Cron:      cronExpr,
 		Prompt:    *prompt,
 		CreatedAt: time.Now().UnixMilli(),
-		Recurring: !*noRecurring,
+		Recurring: recurring,
 		Permanent: true,
 	}
 	store.Tasks = append(store.Tasks, t)
@@ -199,8 +215,127 @@ func cmdScheduleCreate(args []string) error {
 		return fmt.Errorf("schedule create: %w", err)
 	}
 	fmt.Println(t.ID)
-	fmt.Fprintf(os.Stderr, "added schedule %s (%s) → %s\n", t.ID, t.Cron, path)
+	mode := "recurring"
+	if !recurring {
+		mode = "one-shot"
+	}
+	fmt.Fprintf(os.Stderr, "added schedule %s (%s, %s) → %s\n", t.ID, t.Cron, mode, path)
 	return nil
+}
+
+// resolveScheduleWhen turns the three mutually-exclusive scheduling
+// flags into a (cron, recurring) pair. Exactly one of cron / dailyAt
+// / once must be set.
+func resolveScheduleWhen(cron, dailyAt, once string, noRecurring bool) (string, bool, error) {
+	cron = strings.TrimSpace(cron)
+	dailyAt = strings.TrimSpace(dailyAt)
+	once = strings.TrimSpace(once)
+	set := 0
+	for _, s := range []string{cron, dailyAt, once} {
+		if s != "" {
+			set++
+		}
+	}
+	if set == 0 {
+		return "", false, fmt.Errorf("one of --cron, --daily-at, --once is required")
+	}
+	if set > 1 {
+		return "", false, fmt.Errorf("--cron, --daily-at, --once are mutually exclusive")
+	}
+	switch {
+	case cron != "":
+		return cron, !noRecurring, nil
+	case dailyAt != "":
+		expr, err := dailyAtToCron(dailyAt)
+		if err != nil {
+			return "", false, err
+		}
+		return expr, !noRecurring, nil
+	default:
+		expr, err := onceToCron(once)
+		if err != nil {
+			return "", false, err
+		}
+		// One-shot is always recurring=false. Claude Code auto-deletes
+		// the task after it fires (see CronCreateTool.ts).
+		return expr, false, nil
+	}
+}
+
+// dailyAtToCron parses "11:00,15:00,17:00" into "0 11,15,17 * * *".
+// Requires every time to share the same minute — cron's minute field
+// is a single value when paired with a multi-hour list.
+func dailyAtToCron(spec string) (string, error) {
+	raw := strings.Split(spec, ",")
+	hours := make([]int, 0, len(raw))
+	minute := -1
+	for _, p := range raw {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		hh, mm, err := parseHHMM(p)
+		if err != nil {
+			return "", fmt.Errorf("--daily-at %q: %w", p, err)
+		}
+		if minute == -1 {
+			minute = mm
+		} else if mm != minute {
+			return "", fmt.Errorf("--daily-at: all times must share the same minute (got :%02d and :%02d)", minute, mm)
+		}
+		hours = append(hours, hh)
+	}
+	if len(hours) == 0 {
+		return "", fmt.Errorf("--daily-at: no times provided")
+	}
+	parts := make([]string, len(hours))
+	for i, h := range hours {
+		parts[i] = strconv.Itoa(h)
+	}
+	return fmt.Sprintf("%d %s * * *", minute, strings.Join(parts, ",")), nil
+}
+
+// onceToCron parses an ISO-like local time ("2026-04-26T17:00" or
+// "2026-04-26 17:00") into a date-locked cron ("0 17 26 4 *") that
+// matches exactly once. Caller pairs this with recurring=false.
+func onceToCron(spec string) (string, error) {
+	layouts := []string{
+		"2006-01-02T15:04",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04",
+		"2006-01-02 15:04:05",
+	}
+	var t time.Time
+	var err error
+	for _, l := range layouts {
+		t, err = time.ParseInLocation(l, spec, time.Local)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("--once %q: expected YYYY-MM-DDTHH:MM (local time)", spec)
+	}
+	if !t.After(time.Now()) {
+		return "", fmt.Errorf("--once %q: time is in the past", spec)
+	}
+	return fmt.Sprintf("%d %d %d %d *", t.Minute(), t.Hour(), t.Day(), int(t.Month())), nil
+}
+
+func parseHHMM(s string) (hour, minute int, err error) {
+	parts := strings.Split(s, ":")
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("expected HH:MM")
+	}
+	hour, err = strconv.Atoi(parts[0])
+	if err != nil || hour < 0 || hour > 23 {
+		return 0, 0, fmt.Errorf("hour must be 0-23")
+	}
+	minute, err = strconv.Atoi(parts[1])
+	if err != nil || minute < 0 || minute > 59 {
+		return 0, 0, fmt.Errorf("minute must be 0-59")
+	}
+	return hour, minute, nil
 }
 
 func cmdScheduleDelete(args []string) error {
