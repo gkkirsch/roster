@@ -105,6 +105,8 @@ func cmdSchedule(args []string) error {
 		return cmdScheduleCreate(args[1:])
 	case "delete", "remove", "rm":
 		return cmdScheduleDelete(args[1:])
+	case "update", "edit":
+		return cmdScheduleUpdate(args[1:])
 	case "-h", "--help", "help":
 		return scheduleUsage()
 	default:
@@ -127,6 +129,9 @@ const scheduleUsageText = `usage:
 
          Recurring by default for --cron and --daily-at; --once forces
          recurring=false.
+
+  roster schedule update <orch> <task-id> [--prompt "<text>"] [<when>]
+         Replace prompt and/or schedule on an existing task.
 
   roster schedule delete <orch> <task-id>
          Remove a task by id. ids are 8 hex chars (see 'list').
@@ -336,6 +341,62 @@ func parseHHMM(s string) (hour, minute int, err error) {
 		return 0, 0, fmt.Errorf("minute must be 0-59")
 	}
 	return hour, minute, nil
+}
+
+func cmdScheduleUpdate(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: roster schedule update <orch> <task-id> [--prompt \"<text>\"] [--cron|--daily-at|--once <value>]")
+	}
+	orch, taskID := args[0], args[1]
+	fs := flag.NewFlagSet("schedule update", flag.ContinueOnError)
+	cron := fs.String("cron", "", "cron expression")
+	dailyAt := fs.String("daily-at", "", "comma-separated daily times")
+	once := fs.String("once", "", "one-shot ISO local time")
+	prompt := fs.String("prompt", "", "new prompt text")
+	noRecurring := fs.Bool("no-recurring", false, "force recurring=false on --cron / --daily-at")
+	if err := fs.Parse(args[2:]); err != nil {
+		return err
+	}
+	*prompt = strings.TrimSpace(*prompt)
+
+	if _, err := loadAgent(orch); err != nil {
+		return fmt.Errorf("schedule update: %w", err)
+	}
+	path, store, err := loadSchedules(orch)
+	if err != nil {
+		return fmt.Errorf("schedule update: %w", err)
+	}
+	idx := -1
+	for i, t := range store.Tasks {
+		if t.ID == taskID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("schedule update: no task with id %q", taskID)
+	}
+
+	whenSet := strings.TrimSpace(*cron) != "" || strings.TrimSpace(*dailyAt) != "" || strings.TrimSpace(*once) != ""
+	if whenSet {
+		expr, recurring, err := resolveScheduleWhen(*cron, *dailyAt, *once, *noRecurring)
+		if err != nil {
+			return fmt.Errorf("schedule update: %w", err)
+		}
+		store.Tasks[idx].Cron = expr
+		store.Tasks[idx].Recurring = recurring
+	}
+	if *prompt != "" {
+		store.Tasks[idx].Prompt = *prompt
+	}
+	if !whenSet && *prompt == "" {
+		return fmt.Errorf("schedule update: nothing to change (pass --prompt and/or --cron/--daily-at/--once)")
+	}
+	if err := saveSchedules(path, store); err != nil {
+		return fmt.Errorf("schedule update: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "updated %s\n", taskID)
+	return nil
 }
 
 func cmdScheduleDelete(args []string) error {
