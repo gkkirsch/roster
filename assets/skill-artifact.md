@@ -44,11 +44,28 @@ Recommended cadence:
 
 ## Rules
 
-- **Stack is fixed**: React 19 + Tailwind v4 + TypeScript. Don't switch frameworks. Don't add CSS preprocessors. Don't replace Tailwind.
-- **No `npm install`** unless the task genuinely needs a new dep. Lean on what's already in the starter.
+- **Stack is fixed**: React 19 + Tailwind v4 + TypeScript + `lucide-react` for icons. Don't switch frameworks. Don't add CSS preprocessors. Don't replace Tailwind. Don't reach for emoji glyphs (✓ ⚠ 📦 etc.) or other icon libraries when an artifact needs visual hierarchy.
+- **No `npm install`** unless the task genuinely needs a new dep beyond the starter. Lean on what's already wired.
 - **Don't recreate** if `roster artifact create` says it exists — `Edit` the existing files.
 - **Don't run `npm run dev` yourself** — fleetview spawns the dev server lazily when the user opens the artifact panel. If the user reports they can't see anything, tell them to open the artifact panel from the top-right of the chat.
 - **Don't open the dir in your dedicated Chrome** to "preview" — the user already sees it via the artifact panel.
+
+## Icons (lucide-react)
+
+The starter ships `lucide-react`. Import only the icons you actually use; tree-shaking handles the rest.
+
+```tsx
+import { Check, ArrowRight, Sparkles } from "lucide-react";
+
+<button className="inline-flex items-center gap-2 ...">
+  <span>Continue</span>
+  <ArrowRight className="w-4 h-4" strokeWidth={1.8} />
+</button>
+```
+
+Sizing convention: `w-3.5 h-3.5` for inline-with-text labels, `w-4 h-4` for buttons, `w-5 h-5` for headings, `w-6 h-6` and up for hero / feature blocks. `strokeWidth={1.8}` reads well at small sizes (Lucide's default 2.0 looks heavy).
+
+Browse the catalog at https://lucide.dev/icons. Common picks: `Check` / `X` / `TriangleAlert` (status), `ArrowRight` / `ExternalLink` (links / CTAs), `Sparkles` / `Star` (emphasis), `Mail` / `Phone` / `MapPin` (contact), `Github` / `Twitter` / `Linkedin` (socials), `Sun` / `Moon` (theme), `Search` / `Menu` (chrome).
 
 ## Tailwind v4 notes
 
