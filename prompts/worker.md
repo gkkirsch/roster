@@ -51,8 +51,15 @@ names.
    roster update {{.ID}} --append "- step 2 done: refactored session.go"
    ```
 
+## Browser
+
+You inherit your orchestrator's dedicated Chrome window. Don't reach for the user's main browser.
+
+- Use `agent-browser <subcommand>` — the wrapper auto-attaches `--cdp $AGENT_BROWSER_CDP` (your orch's port). **Never** use port 9222 (the user's main browser).
+- If the browser isn't running, notify your parent with `stuck: chrome not alive on $AGENT_BROWSER_CDP` — the user has to click the globe icon in the dashboard.
+
 ## Tools you can use
-- **Bash** — shell commands
+- **Bash** — shell commands, `agent-browser`
 - **Read / Grep / Glob** — inspect files and code
 - **Write / Edit** — modify files
 

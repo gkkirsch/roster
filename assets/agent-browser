@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# agent-browser — roster wrapper.
+#
+# Forces every invocation through the per-space CDP port so an agent can't
+# accidentally launch a separate browser or talk to the wrong one. Strips
+# user-supplied --cdp / --profile / --session / --executable-path /
+# --auto-connect so they can't override us. Blocks subcommands that would
+# escape isolation (`connect`, `dashboard`, `doctor`).
+#
+# Looks up the real `agent-browser` binary on PATH (skipping ourselves);
+# falls back to `npx -y agent-browser` if nothing is installed globally.
+set -euo pipefail
+
+# Resolve the real agent-browser binary. roster's installBrowserWrapper
+# wrote its path to a sidecar at install time (so we don't have to
+# discover it dynamically and risk recursing into our own symlink).
+# Resolve $0 through any symlinks first — when invoked via
+# ~/.local/bin/agent-browser the sidecar lives next to the canonical
+# script, not next to the symlink.
+self_resolved=$(readlink -f "$0" 2>/dev/null || python3 -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$0")
+self_dir=$(cd -- "$(dirname -- "$self_resolved")" && pwd)
+real=""
+sidecar="$self_dir/.agent-browser-real"
+if [[ -f "$sidecar" ]]; then
+  real=$(< "$sidecar")
+fi
+if [[ ! -x "$real" ]]; then
+  echo "agent-browser: real binary not found (sidecar at $sidecar). Re-run \`roster spawn\` or reinstall agent-browser." >&2
+  exit 2
+fi
+
+# Outside a roster space (no AGENT_BROWSER_CDP), pass through unchanged
+# so user's main shell sees vanilla agent-browser. Only roster orchs
+# get the enforced --cdp + blocked subcommands.
+if [[ -z "${AGENT_BROWSER_CDP:-}" ]]; then
+  exec "$real" "$@"
+fi
+
+case "${1:-}" in
+  connect|dashboard|doctor)
+    echo "agent-browser: subcommand '$1' is blocked inside roster spaces (would launch / probe a separate browser)." >&2
+    exit 2
+    ;;
+esac
+
+filtered=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cdp|--profile|--session|--executable-path)
+      shift
+      [[ $# -gt 0 ]] && shift
+      ;;
+    --cdp=*|--profile=*|--session=*|--executable-path=*)
+      shift
+      ;;
+    --auto-connect)
+      shift
+      ;;
+    *)
+      filtered+=("$1")
+      shift
+      ;;
+  esac
+done
+
+exec "$real" --cdp "$AGENT_BROWSER_CDP" "${filtered[@]}"
