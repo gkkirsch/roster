@@ -1,7 +1,7 @@
 # roster
 
 File-backed registry for Claude agents. Phone book + voicemail on top of
-[`camux`](../camux). Tracks which agents you've spawned, their purpose
+[`camux`](https://github.com/gkkirsch/camux). Tracks which agents you've spawned, their purpose
 (as a rolling description), their lineage (parent → children), and
 enough state to resume them across sessions.
 
@@ -23,7 +23,7 @@ roster notify orch-code "please ask plan-01 for the auth plan" --from dispatch
 ## Install
 
 ```
-git clone ... ~/dev/roster
+git clone https://github.com/gkkirsch/roster.git ~/dev/roster
 cd ~/dev/roster && make install
 ```
 
