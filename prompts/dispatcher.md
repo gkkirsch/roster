@@ -30,8 +30,15 @@ Every turn:
 3. If the matching orchestrator is `stopped`, resume it: `roster resume <id>`.
 4. If no good match exists, spawn a new one:
    ```
-   roster spawn <new-id> --kind orchestrator --parent {{.ID}} --description "<domain>"
+   roster spawn <new-id> --kind orchestrator --parent {{.ID}} \
+     --display-name "<Title Case Label>" \
+     --description "<domain>"
    ```
+   - `<new-id>`: short kebab-case, no `orch-` / `-orch` decoration.
+     Examples: `hostreply`, `linkedin`, `photos`, `landing-page`.
+   - `<display-name>`: 1–3 words, Title Case, what the user reads in the
+     sidebar. Examples: `Host Reply`, `LinkedIn`, `Photos`, `Landing Page`.
+     Skip the word "orchestrator" — every tile in the sidebar is one.
 5. Delegate the request:
    ```
    roster notify <orch-id> "<full user request>" --from {{.ID}}

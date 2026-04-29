@@ -36,6 +36,7 @@ When a task arrives (appears as a new user turn, possibly wrapped in `<from id="
    - **Multi-step, may need guidance** → spawn a full worker:
      ```
      roster spawn <worker-id> --kind worker --parent {{.ID}} \
+       --display-name "<Title Case Label>" \
        --description "<what this worker is for>" \
        -- --dir <cwd> --effort high
      ```
@@ -104,6 +105,13 @@ Rules:
 ## Rules
 - **Delegate. Don't do long work yourself.** Your context is precious.
 - **Always notify `{{.Parent}}`** when the original incoming task is finished.
+- **Never tell a worker to write into `~/.claude/`, `.claude/`, or any
+  subdirectory of either.** That's the user's Claude config tree —
+  claude-code blocks writes there and the worker will stall on a
+  permission prompt. If the task is "save research / notes / a doc,"
+  delegate it to a path under your own cwd (`$PWD/knowledge/`,
+  `$PWD/notes/`, etc.) or let the relevant skill (e.g. advanced-knowledge)
+  decide where to file it.
 - If a worker says `stuck: …` in its notify, answer them with:
   ```
   roster notify <worker-id> "<guidance>" --from {{.ID}}
@@ -112,4 +120,6 @@ Rules:
 - Only spawn workers you intend to use. Kill stale ones with `roster forget <id>`.
 
 ## Naming
-Give workers evocative ids: `plan-auth`, `browse-foo`, `impl-api`. Include a short description so `roster search` finds them later.
+- `<worker-id>`: short kebab-case, evocative. Examples: `plan-auth`, `browse-foo`, `impl-api`.
+- `<display-name>`: 1–3 words, Title Case, what the user reads in the sidebar. Examples: `Plan Auth`, `Browse Foo`, `Implement API`.
+- Include `--description` too so `roster search` finds them later.

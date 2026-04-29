@@ -18,6 +18,7 @@ type Agent struct {
 	ID          string    `json:"id"`
 	Kind        string    `json:"kind"`                    // dispatcher | orchestrator | worker
 	Parent      string    `json:"parent,omitempty"`        // empty at top of tree
+	DisplayName string    `json:"display_name,omitempty"`  // pretty UI label; ids stay kebab-case
 	Description string    `json:"description"`             // rolling summary, grows over time
 	SessionUUID string    `json:"session_uuid,omitempty"`  // claude --resume handle
 	SpawnArgs   []string  `json:"spawn_args"`              // camux spawn flags (post-<sess>)

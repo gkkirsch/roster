@@ -28,6 +28,7 @@ func cmdSpawn(args []string) error {
 	kind := fs.String("kind", "worker", strings.Join(KnownKinds, " | "))
 	parent := fs.String("parent", "", "id of the agent that spawned this one")
 	description := fs.String("description", "", "rolling summary of what this agent is for / has done")
+	displayName := fs.String("display-name", "", "human-friendly UI label (e.g. \"Host Reply\"); falls back to a humanized id when empty")
 	rawTimeout := fs.Duration("timeout", 90*time.Second, "how long to wait for the Claude TUI to become ready")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -104,6 +105,7 @@ func cmdSpawn(args []string) error {
 		ID:          id,
 		Kind:        *kind,
 		Parent:      *parent,
+		DisplayName: strings.TrimSpace(*displayName),
 		Description: *description,
 		SessionUUID: sessionUUID,
 		SpawnArgs:   camuxFlags,
@@ -326,13 +328,21 @@ func printTree(a *Agent, all []*Agent, prefix string, isRoot bool) {
 
 func cmdUpdate(args []string) error {
 	if len(args) < 1 {
-		return fmt.Errorf("usage: roster update <id> [--description \"...\"] [--append \"...\"]")
+		return fmt.Errorf("usage: roster update <id> [--description \"...\"] [--append \"...\"] [--display-name \"...\"]")
 	}
 	id := args[0]
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	description := fs.String("description", "", "replace description with this value")
 	appendStr := fs.String("append", "", "append this text to description (with newline separator)")
+	displayName := fs.String("display-name", "", "set the human-friendly UI label (pass empty to leave unchanged; use --display-name=\"\" to clear)")
+	displayNameSet := false
+	for _, a := range args[1:] {
+		if a == "--display-name" || strings.HasPrefix(a, "--display-name=") {
+			displayNameSet = true
+			break
+		}
+	}
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -349,8 +359,11 @@ func cmdUpdate(args []string) error {
 		}
 		a.Description += *appendStr
 	}
-	if *description == "" && *appendStr == "" {
-		return fmt.Errorf("update: need --description or --append")
+	if displayNameSet {
+		a.DisplayName = strings.TrimSpace(*displayName)
+	}
+	if *description == "" && *appendStr == "" && !displayNameSet {
+		return fmt.Errorf("update: need --description, --append, or --display-name")
 	}
 	a.LastSeen = time.Now().UTC()
 	return saveAgent(a)
