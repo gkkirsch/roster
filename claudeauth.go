@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // Per-orch CLAUDE_CONFIG_DIR isolation breaks first-launch in two
@@ -136,7 +138,65 @@ func seedOrchClaudeDir(orchDir string) error {
 	if err := seedSkill(orchDir, "agent-browser", skillAgentBrowser); err != nil {
 		return err
 	}
-	return seedSkill(orchDir, "artifact", skillArtifact)
+	if err := seedSkill(orchDir, "artifact", skillArtifact); err != nil {
+		return err
+	}
+	// flow-core marketplace ships advanced-memory + advanced-knowledge.
+	// Idempotent: claude CLI no-ops on duplicates. Runs synchronously
+	// so it completes before the spawn returns — running in a goroutine
+	// gets killed when this CLI process exits (typically before the
+	// second `claude plugin install` completes). Adds ~5-10s to the
+	// first spawn of an orch; subsequent spawns are instant since
+	// every step short-circuits on "already".
+	seedFlowCore(orchDir)
+	return nil
+}
+
+// flowCoreMarketplaceURL is the public marketplace.json that ships
+// with Flow. Hosted on superchargeclaudecode.com; the source plugins
+// live in gkkirsch/gkkirsch-claude-plugins.
+const flowCoreMarketplaceURL = "https://superchargeclaudecode.com/api/marketplaces/flow-core/marketplace.json"
+
+// flowCorePlugins is the auto-install list. Keep this in sync with
+// the marketplace contents — adding a plugin to flow-core means
+// adding it here.
+var flowCorePlugins = []string{
+	"advanced-memory@flow-core",
+	"advanced-knowledge@flow-core",
+}
+
+// seedFlowCore registers the flow-core marketplace and installs its
+// plugins into orchDir. Runs in the background so the orch's first
+// spawn isn't blocked on network. Errors are logged, never returned —
+// users can recover by adding the marketplace manually.
+func seedFlowCore(orchDir string) {
+	env := append(os.Environ(), "CLAUDE_CONFIG_DIR="+orchDir)
+
+	add := exec.Command("claude", "plugin", "marketplace", "add", flowCoreMarketplaceURL)
+	add.Env = env
+	if out, err := add.CombinedOutput(); err != nil {
+		// "already exists" is the expected path on every spawn after
+		// the first — don't spam stderr with it.
+		if !bytes.Contains(out, []byte("already")) {
+			fmt.Fprintf(os.Stderr, "roster: flow-core add: %v — %s\n", err, strings.TrimSpace(string(out)))
+		}
+	}
+	for i, spec := range flowCorePlugins {
+		// Brief gap between installs — claude plugin install creates
+		// a temp_git_<ts> dir under plugins/cache; back-to-back calls
+		// against the same dir occasionally race and one of them
+		// silently fails to persist installed_plugins.json. The 250ms
+		// breather is cheap and reliable.
+		if i > 0 {
+			time.Sleep(250 * time.Millisecond)
+		}
+		install := exec.Command("claude", "plugin", "install", spec)
+		install.Env = env
+		out, err := install.CombinedOutput()
+		if err != nil && !bytes.Contains(out, []byte("already")) {
+			fmt.Fprintf(os.Stderr, "roster: flow-core install %s: %v — %s\n", spec, err, strings.TrimSpace(string(out)))
+		}
+	}
 }
 
 // seedSkill writes a roster-bundled skill into <orch_dir>/skills/<name>/
