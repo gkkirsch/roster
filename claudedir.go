@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -73,6 +74,116 @@ func ensureAmuxSession(session string) error {
 // `tmux new-window -t <session>` invocations inherit it. Env set via
 // plain process inheritance does NOT reach tmux-spawned windows, so
 // this is how we propagate CLAUDE_CONFIG_DIR.
+// injectPluginCreds walks the orch's installed plugins, looks up
+// each declared credential in the macOS keychain (under fleetview's
+// per-agent service), and sets it as a tmux session env var so plugin
+// scripts can read $KEY directly. The keychain layout matches what
+// fleetview's `POST /api/agents/:id/credentials` writes:
+//
+//   service: fleetview-<agentID>
+//   account: <plugin>@<marketplace>/<key>
+//
+// Plugin authors don't have to know about keychain — they just read
+// $KEY at runtime. Same env var name as the user typed in the form,
+// no transformation. Missing values are silently skipped (env stays
+// unset, plugin's own fallback kicks in).
+func injectPluginCreds(claudeDir, agentID, session string) error {
+	ipPath := filepath.Join(claudeDir, "plugins", "installed_plugins.json")
+	b, err := os.ReadFile(ipPath)
+	if err != nil {
+		return nil // no plugins installed yet
+	}
+	var ip struct {
+		Plugins map[string][]struct {
+			InstallPath string `json:"installPath"`
+		} `json:"plugins"`
+	}
+	if err := json.Unmarshal(b, &ip); err != nil {
+		return err
+	}
+	for key, entries := range ip.Plugins {
+		if len(entries) == 0 {
+			continue
+		}
+		pluginName, marketplace := splitPluginKey(key)
+		credKeys := readDeclaredCredKeys(entries[0].InstallPath)
+		for _, ck := range credKeys {
+			val, ok := keychainGet(agentID, pluginName, marketplace, ck)
+			if !ok {
+				continue
+			}
+			if err := setTmuxSessionEnv(session, ck, val); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// readDeclaredCredKeys returns the set of credential keys a plugin
+// declares. Reads .claude-plugin/config.json (preferred) or falls back
+// to .claude-plugin/credentials.json.
+func readDeclaredCredKeys(installPath string) []string {
+	cfg := filepath.Join(installPath, ".claude-plugin", "config.json")
+	if b, err := os.ReadFile(cfg); err == nil {
+		var doc struct {
+			Credentials []struct {
+				Key string `json:"key"`
+			} `json:"credentials"`
+		}
+		if err := json.Unmarshal(b, &doc); err == nil {
+			out := make([]string, 0, len(doc.Credentials))
+			for _, c := range doc.Credentials {
+				if c.Key != "" {
+					out = append(out, c.Key)
+				}
+			}
+			return out
+		}
+	}
+	legacy := filepath.Join(installPath, ".claude-plugin", "credentials.json")
+	if b, err := os.ReadFile(legacy); err == nil {
+		var arr []struct {
+			Key string `json:"key"`
+		}
+		if err := json.Unmarshal(b, &arr); err == nil {
+			out := make([]string, 0, len(arr))
+			for _, c := range arr {
+				if c.Key != "" {
+					out = append(out, c.Key)
+				}
+			}
+			return out
+		}
+	}
+	return nil
+}
+
+// splitPluginKey parses "name@marketplace" — mirror of fleetview's.
+func splitPluginKey(key string) (string, string) {
+	i := strings.LastIndex(key, "@")
+	if i <= 0 {
+		return key, ""
+	}
+	return key[:i], key[i+1:]
+}
+
+// keychainGet reads one fleetview-managed credential from the user's
+// macOS keychain. Returns (value, true) on hit, ("", false) on miss.
+func keychainGet(agentID, pluginName, marketplace, key string) (string, bool) {
+	// Use the *real* security binary, not the shim — the shim rewrites
+	// to "Claude Code-credentials" which would clash with the per-agent
+	// service we use for plugin creds.
+	out, err := runRealSecurity("find-generic-password",
+		"-s", "fleetview-"+agentID,
+		"-a", fmt.Sprintf("%s@%s/%s", pluginName, marketplace, key),
+		"-w")
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimRight(string(out), "\n"), true
+}
+
 func setTmuxSessionEnv(session, key, value string) error {
 	cmd := exec.Command("tmux", "set-environment", "-t", session, key, value)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -121,6 +232,13 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	pathVal := shimDir + ":" + os.Getenv("PATH")
 	if err := setTmuxSessionEnv(session, "PATH", pathVal); err != nil {
 		return "", err
+	}
+	// Inject any plugin-declared credentials into the session as env
+	// vars. Best-effort — the agent still works without them; failures
+	// here just mean a plugin script will hit the existing "$KEY not
+	// set" path and tell the user to configure it.
+	if err := injectPluginCreds(dir, id, session); err != nil {
+		fmt.Fprintf(os.Stderr, "roster: plugin creds: %v\n", err)
 	}
 	return dir, nil
 }
