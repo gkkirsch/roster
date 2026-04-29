@@ -12,9 +12,15 @@ import (
 )
 
 // claudeDirFor resolves the effective CLAUDE_CONFIG_DIR for an agent.
-// Orchestrators get their own dir. Workers inherit their nearest
-// orchestrator ancestor's. Dispatchers (and workers with no orchestrator
-// ancestor) return "" meaning "use the user's global ~/.claude".
+//
+//   orchestrator → its own dir (per-orch isolation)
+//   worker       → its nearest orchestrator ancestor's dir
+//   dispatcher   → its own dir, separate from the user's ~/.claude.
+//                  This keeps the dispatcher off any plugins/skills the
+//                  user has installed globally — the dispatcher's job
+//                  is to route, nothing else.
+//
+// Anything else returns "" meaning "use ~/.claude".
 func claudeDirFor(kind, id, parentID string) (string, error) {
 	switch kind {
 	case "orchestrator":
@@ -25,6 +31,8 @@ func claudeDirFor(kind, id, parentID string) (string, error) {
 			return "", err
 		}
 		return orchestratorClaudeDir(orch)
+	case "dispatcher":
+		return orchestratorClaudeDir(id)
 	}
 	return "", nil
 }
@@ -258,9 +266,14 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	if !userKeychainHasClaudeCreds() {
 		return "", fmt.Errorf("no Claude credentials found in keychain; log in with `claude` once first")
 	}
-	if kind == "orchestrator" {
+	switch kind {
+	case "orchestrator":
 		if err := seedOrchClaudeDir(dir); err != nil {
 			return "", fmt.Errorf("seed orch claude dir: %w", err)
+		}
+	case "dispatcher":
+		if err := seedDispatcherClaudeDir(dir); err != nil {
+			return "", fmt.Errorf("seed dispatcher claude dir: %w", err)
 		}
 	}
 	shim, err := installSecurityShim()

@@ -152,6 +152,18 @@ func seedOrchClaudeDir(orchDir string) error {
 	return nil
 }
 
+// seedDispatcherClaudeDir is a stripped-down version of
+// seedOrchClaudeDir for dispatchers: onboarding bypass yes, plugins
+// no, agent-browser/artifact skills no. The dispatcher is a router,
+// not a worker — it should have no skills/plugins of its own so the
+// global ~/.claude inventory doesn't bleed into its prompt.
+func seedDispatcherClaudeDir(dir string) error {
+	if err := seedClaudeJSON(dir); err != nil {
+		return err
+	}
+	return seedSettingsJSON(dir)
+}
+
 // flowCoreMarketplaceURL is the public marketplace.json that ships
 // with Flow. Hosted on superchargeclaudecode.com; the source plugins
 // live in gkkirsch/gkkirsch-claude-plugins.

@@ -56,15 +56,21 @@ func cmdSpawn(args []string) error {
 	// Prepend --system-prompt so any user-provided one later in camuxFlags
 	// wins (claude's CLI: later flag overrides earlier).
 	baseFlags := []string{"--system-prompt", systemPrompt}
+	// Dispatchers run on the latest Sonnet — fast routing, the
+	// orchestrators it spawns can use whatever model they need.
+	if *kind == "dispatcher" {
+		baseFlags = append(baseFlags, "--model", "claude-sonnet-4-6")
+	}
 	camuxFlags = append(baseFlags, camuxFlags...)
 
 	session := id
 
-	// Isolate this agent's ~/.claude if it's an orchestrator (own dir) or
-	// a worker (inherit its orchestrator's dir). Pre-creates the tmux
-	// session and sets CLAUDE_CONFIG_DIR on it so the upcoming
-	// new-window picks it up. Dispatchers skip this and use the user's
-	// global ~/.claude.
+	// Isolate this agent's ~/.claude. Each agent kind gets its own dir:
+	//   orchestrator → own dir
+	//   worker       → inherits its orchestrator's dir
+	//   dispatcher   → own dir (no plugins/skills — pure router)
+	// Pre-creates the tmux session and sets CLAUDE_CONFIG_DIR on it so
+	// the upcoming new-window picks it up.
 	if _, err := prepareClaudeIsolation(*kind, id, *parent, session); err != nil {
 		return fmt.Errorf("spawn: claude dir isolation: %w", err)
 	}
@@ -498,19 +504,24 @@ func cmdNotify(args []string) error {
 		return fmt.Errorf("notify: recipient %s not ready: %w", to, err)
 	}
 	// Format the delivered message. When the sender is a registered
-	// roster agent, we also append a reply-protocol footer. Without it
-	// the recipient tends to answer as plain text in its own pane and
-	// the sender never hears back.
+	// roster agent, wrap it in a <from id="..."> envelope. Two reasons:
+	//   1. Unambiguous parsing — the recipient (and the UI) can detect
+	//      "this turn is a peer-relay, not raw user input" by tag, not
+	//      by guessing where a "[from X]" prefix ends.
+	//   2. The dashboard hides these envelopes from view; the user
+	//      shouldn't see the cross-agent chatter, only their own
+	//      messages and the dispatcher's replies.
+	// Plain user input (no --from) passes through unchanged.
 	delivered := msg
 	if *from != "" {
 		footer := ""
 		if agentExists(*from) {
 			footer = fmt.Sprintf(
-				"\n\n—\nTo respond, end your turn with: `roster notify %s \"<your reply>\" --from <your-agent-id>`.\nPlain text alone does NOT reach %s.",
+				"\n\nTo respond, end your turn with: `roster notify %s \"<your reply>\" --from <your-agent-id>`. Plain text alone does NOT reach %s.",
 				*from, *from,
 			)
 		}
-		delivered = fmt.Sprintf("[from %s]\n\n%s%s", *from, msg, footer)
+		delivered = fmt.Sprintf("<from id=\"%s\">\n%s%s\n</from>", *from, msg, footer)
 	}
 	// Paste + submit directly via amux — camux `ask` would block waiting
 	// for a reply, which isn't what notify semantics imply (fire-and-forget
