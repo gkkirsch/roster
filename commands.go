@@ -404,6 +404,21 @@ func cmdResume(args []string) error {
 	}
 	spawnArgs := append([]string{"spawn", session}, flags...)
 	out, err := runCamux(spawnArgs...)
+	if err != nil && a.SessionUUID != "" {
+		// `claude --resume <uuid>` fails when the JSONL was deleted /
+		// rolled. Don't strand the orch — retry with a fresh session.
+		// The new session_uuid gets persisted at the bottom of this
+		// function via saveAgent so the next resume picks it up.
+		fresh := append([]string{}, a.SpawnArgs...)
+		spawnFresh := append([]string{"spawn", session}, fresh...)
+		var freshErr error
+		if out, freshErr = runCamux(spawnFresh...); freshErr == nil {
+			a.SessionUUID = "" // forget the dead one
+			err = nil
+		} else {
+			err = fmt.Errorf("%w; fresh-spawn fallback also failed: %v", err, freshErr)
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("resume: camux spawn failed: %w", err)
 	}

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -168,6 +170,49 @@ func splitPluginKey(key string) (string, string) {
 	return key[:i], key[i+1:]
 }
 
+// mirrorClaudeCredsToOrch copies the canonical "Claude Code-credentials"
+// keychain entry into the per-orch suffixed entry that Claude Code
+// looks up directly. claude-code computes the suffix as the first 8
+// chars of sha256(CLAUDE_CONFIG_DIR), reading via Keychain Services
+// (not the `security` CLI), which is why the existing PATH shim
+// doesn't help.
+//
+// Idempotent: -U on add-generic-password updates in place. Skips
+// silently if the canonical entry doesn't exist — the early check in
+// prepareClaudeIsolation already errors loudly on that case.
+func mirrorClaudeCredsToOrch(claudeDir string) error {
+	canonical, err := runRealSecurity("find-generic-password",
+		"-s", "Claude Code-credentials",
+		"-a", os.Getenv("USER"),
+		"-w")
+	if err != nil {
+		return nil
+	}
+	value := strings.TrimRight(string(canonical), "\n")
+	if value == "" {
+		return nil
+	}
+	suffix := claudeConfigDirHash(claudeDir)
+	service := "Claude Code-credentials-" + suffix
+	cmd := exec.Command("/usr/bin/security", "add-generic-password",
+		"-s", service,
+		"-a", os.Getenv("USER"),
+		"-w", value,
+		"-U")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("add-generic-password %s: %v — %s", service, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// claudeConfigDirHash mirrors how claude-code derives the keychain
+// service suffix when CLAUDE_CONFIG_DIR is set: sha256[:8] of the dir.
+func claudeConfigDirHash(dir string) string {
+	sum := sha256.Sum256([]byte(dir))
+	return hex.EncodeToString(sum[:])[:8]
+}
+
 // keychainGet reads one fleetview-managed credential from the user's
 // macOS keychain. Returns (value, true) on hit, ("", false) on miss.
 func keychainGet(agentID, pluginName, marketplace, key string) (string, bool) {
@@ -239,6 +284,16 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	// set" path and tell the user to configure it.
 	if err := injectPluginCreds(dir, id, session); err != nil {
 		fmt.Fprintf(os.Stderr, "roster: plugin creds: %v\n", err)
+	}
+	// Mirror the user's canonical Claude OAuth tokens into the per-orch
+	// suffixed keychain entry that Claude Code itself looks at. The
+	// shell shim (PATH-prepended) can only redirect subprocess calls;
+	// claude-code reads keychain directly via the macOS Keychain
+	// Services API, which the shim doesn't intercept. Without this
+	// mirror, every fresh orch boots into a "Not logged in" state even
+	// though the user is signed in globally.
+	if err := mirrorClaudeCredsToOrch(dir); err != nil {
+		fmt.Fprintf(os.Stderr, "roster: mirror claude creds: %v\n", err)
 	}
 	return dir, nil
 }
