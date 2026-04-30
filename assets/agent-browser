@@ -63,4 +63,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# agent-browser's --cdp is attach-only: if the port is dead, it falls
+# back to an internal "auto-launch" that hardcodes port 9222 and fails
+# (or worse, would talk to the user's main browser). So before we
+# exec, make sure Chrome is alive on OUR per-orch port. If not, launch
+# it ourselves with the per-orch profile and port — the same args
+# fleetview's globe button uses.
+if ! curl -sf -m 1 -o /dev/null "http://127.0.0.1:${AGENT_BROWSER_CDP}/json/version" 2>/dev/null; then
+  if [[ -n "${AGENT_BROWSER_PROFILE:-}" ]]; then
+    open -na "Google Chrome" --args \
+      --user-data-dir="$AGENT_BROWSER_PROFILE" \
+      --remote-debugging-port="$AGENT_BROWSER_CDP" \
+      --no-first-run \
+      --no-default-browser-check \
+      --window-size=1280,800 \
+      about:blank >/dev/null 2>&1 || true
+    # Wait up to ~6s for Chrome to bind the port. Mirrors fleetview's
+    # 40 × 150ms poll in launchChrome.
+    for _ in $(seq 1 40); do
+      if curl -sf -m 1 -o /dev/null "http://127.0.0.1:${AGENT_BROWSER_CDP}/json/version" 2>/dev/null; then
+        break
+      fi
+      sleep 0.15
+    done
+  fi
+fi
+
 exec "$real" --cdp "$AGENT_BROWSER_CDP" "${filtered[@]}"

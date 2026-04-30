@@ -108,10 +108,17 @@ func installBrowserWrapperCanonical() (string, error) {
 // our own symlink.
 //
 // Skipped if the sidecar already exists and points at an executable.
+//
+// Special case: asdf shims do dynamic PATH lookup at runtime. If asdf's
+// .tool-versions says `system` (or our wrapper is first on PATH), the
+// shim resolves back to our wrapper → infinite loop. So when the only
+// candidate is an asdf shim, we parse the shim's `# asdf-plugin:`
+// comment and resolve directly to ~/.asdf/installs/<plugin>/<ver>/bin/<cmd>.
 func writeRealAgentBrowserSidecar(binDir string) error {
 	sidecar := filepath.Join(binDir, ".agent-browser-real")
 	if existing, err := os.ReadFile(sidecar); err == nil {
-		if fi, err := os.Stat(strings.TrimSpace(string(existing))); err == nil && fi.Mode()&0o111 != 0 {
+		path := strings.TrimSpace(string(existing))
+		if fi, err := os.Stat(path); err == nil && fi.Mode()&0o111 != 0 && !isAsdfShim(path) {
 			return nil
 		}
 	}
@@ -126,7 +133,6 @@ func writeRealAgentBrowserSidecar(binDir string) error {
 		if err != nil || fi.Mode()&0o111 == 0 {
 			continue
 		}
-		// Resolve through symlinks; skip if it ends up being our shim.
 		resolved, err := filepath.EvalSymlinks(cand)
 		if err != nil {
 			continue
@@ -135,9 +141,68 @@ func writeRealAgentBrowserSidecar(binDir string) error {
 		if resolvedAbs == ourShimAbs {
 			continue
 		}
+		// asdf shims must be unwrapped — at runtime they go back through
+		// PATH lookup, which finds our wrapper and recurses.
+		if isAsdfShim(resolved) {
+			real := unwrapAsdfShim(resolved)
+			if real == "" {
+				continue
+			}
+			resolved = real
+		}
 		return os.WriteFile(sidecar, []byte(resolved), 0o644)
 	}
 	return fmt.Errorf("no real agent-browser found on PATH (npm install -g agent-browser?)")
+}
+
+// isAsdfShim returns true if path looks like an asdf-generated shim
+// (lives in an asdf shims dir or contains the marker comment).
+func isAsdfShim(path string) bool {
+	if strings.Contains(path, "/asdf/shims/") {
+		return true
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(body), "asdf-plugin:") || strings.Contains(string(body), "asdf exec")
+}
+
+// unwrapAsdfShim parses an asdf shim's `# asdf-plugin: <plugin> <ver>`
+// comment, constructs ~/.asdf/installs/<plugin>/<ver>/bin/<cmd>, and
+// returns the EvalSymlinks-resolved path. Returns "" on failure.
+//
+// Tries every plugin/version combo listed in the shim (asdf shims with
+// multiple managed versions list them all) and returns the first that
+// resolves to an existing executable.
+func unwrapAsdfShim(shimPath string) string {
+	body, err := os.ReadFile(shimPath)
+	if err != nil {
+		return ""
+	}
+	cmd := filepath.Base(shimPath)
+	home, _ := os.UserHomeDir()
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "# asdf-plugin:") {
+			continue
+		}
+		parts := strings.Fields(strings.TrimPrefix(line, "# asdf-plugin:"))
+		if len(parts) < 2 {
+			continue
+		}
+		plugin, version := parts[0], parts[1]
+		cand := filepath.Join(home, ".asdf", "installs", plugin, version, "bin", cmd)
+		fi, err := os.Stat(cand)
+		if err != nil || fi.Mode()&0o111 == 0 {
+			continue
+		}
+		if resolved, err := filepath.EvalSymlinks(cand); err == nil {
+			return resolved
+		}
+		return cand
+	}
+	return ""
 }
 
 // browserOrchFor resolves which orch's browser context an agent should
