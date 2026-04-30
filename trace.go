@@ -20,20 +20,48 @@ import (
 // assistant turn. --follow tails new turns as the agent works.
 
 func cmdTrace(args []string) error {
+	// Pull the first non-flag arg out as the agent id so users can put
+	// it before OR after the flags. Go's flag package stops at the
+	// first non-flag, which forces an awkward `--tail 5 dispatch`
+	// ordering otherwise.
+	//
+	// Have to track which flags take values so a numeric flag value
+	// like the "5" in "--tail 5" doesn't get mis-claimed as the id.
+	flagsWithValue := map[string]bool{
+		"--tail": true, "-tail": true,
+	}
+	var id string
+	var passthrough []string
+	skipNext := false
+	for _, a := range args {
+		if skipNext {
+			passthrough = append(passthrough, a)
+			skipNext = false
+			continue
+		}
+		if id == "" && !strings.HasPrefix(a, "-") {
+			id = a
+			continue
+		}
+		passthrough = append(passthrough, a)
+		// `--tail=5` is self-contained; `--tail 5` consumes the next arg.
+		if flagsWithValue[a] {
+			skipNext = true
+		}
+	}
+	if id == "" {
+		return fmt.Errorf("usage: roster trace <agent-id> [--tail N] [--follow]")
+	}
+
 	fs := flag.NewFlagSet("trace", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	tail := fs.Int("tail", 30, "show the last N turns (0 = all)")
 	follow := fs.Bool("follow", false, "tail new turns as they arrive")
 	fs.BoolVar(follow, "f", false, "alias for --follow")
 	noColor := fs.Bool("no-color", false, "disable ANSI colors")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(passthrough); err != nil {
 		return err
 	}
-	rest := fs.Args()
-	if len(rest) != 1 {
-		return fmt.Errorf("usage: roster trace <agent-id> [--tail N] [--follow]")
-	}
-	id := rest[0]
 
 	path, err := traceJSONLPath(id)
 	if err != nil {
