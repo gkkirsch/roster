@@ -28,6 +28,11 @@ Visibility:
   describe <id> [--tail N] [--json]
   target   <id>
   search  <query>
+  trace   <id> [--tail N] [-f|--follow] [--no-color]
+          Pretty-print the agent's recent JSONL turns. One line per
+          user/assistant/tool_use/tool_result, color-coded, with errors
+          flagged. --follow tails new turns as they arrive — useful for
+          watching what an orch or worker is actually doing live.
 
 Collaboration:
   update  <id> [--description "..."] | [--append "..."]
@@ -104,6 +109,8 @@ func main() {
 		err = cmdForget(args)
 	case "notify":
 		err = cmdNotify(args)
+	case "trace":
+		err = cmdTrace(args)
 	case "init":
 		err = cmdInit(args)
 	case "prompt":
