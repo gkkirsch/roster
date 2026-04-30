@@ -69,7 +69,29 @@ done
 # exec, make sure Chrome is alive on OUR per-orch port. If not, launch
 # it ourselves with the per-orch profile and port — the same args
 # fleetview's globe button uses.
-if ! curl -sf -m 1 -o /dev/null "http://127.0.0.1:${AGENT_BROWSER_CDP}/json/version" 2>/dev/null; then
+chrome_alive() {
+  curl -sf -m 1 -o /dev/null "http://127.0.0.1:${AGENT_BROWSER_CDP}/json/version" 2>/dev/null
+}
+
+# A daemon may already exist for this session from a prior run, holding a
+# reference to a Chrome that has since been closed. When that happens
+# agent-browser ignores --cdp and tries to use the dead browser. Detect
+# (Chrome dead + daemon alive) and kill the daemon so it respawns clean.
+session_dir="$HOME/.agent-browser"
+session_pid_file="$session_dir/${AGENT_BROWSER_SESSION}.pid"
+if [[ -f "$session_pid_file" ]] && ! chrome_alive; then
+  daemon_pid=$(cat "$session_pid_file" 2>/dev/null || true)
+  if [[ -n "$daemon_pid" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
+    kill "$daemon_pid" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      kill -0 "$daemon_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+  fi
+  rm -f "$session_dir/${AGENT_BROWSER_SESSION}".{pid,sock,stream,version} 2>/dev/null || true
+fi
+
+if ! chrome_alive; then
   if [[ -n "${AGENT_BROWSER_PROFILE:-}" ]]; then
     open -na "Google Chrome" --args \
       --user-data-dir="$AGENT_BROWSER_PROFILE" \
@@ -81,7 +103,7 @@ if ! curl -sf -m 1 -o /dev/null "http://127.0.0.1:${AGENT_BROWSER_CDP}/json/vers
     # Wait up to ~6s for Chrome to bind the port. Mirrors fleetview's
     # 40 × 150ms poll in launchChrome.
     for _ in $(seq 1 40); do
-      if curl -sf -m 1 -o /dev/null "http://127.0.0.1:${AGENT_BROWSER_CDP}/json/version" 2>/dev/null; then
+      if chrome_alive; then
         break
       fi
       sleep 0.15
