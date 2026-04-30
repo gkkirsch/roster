@@ -81,8 +81,9 @@ func cmdSpawn(args []string) error {
 
 	spawnArgs := append([]string{"spawn", session}, camuxFlags...)
 	spawnArgs = append(spawnArgs, "--timeout", rawTimeout.String())
-	// Pin claude's $PWD to the agent's space (~/Flow/<orch>/) so all
-	// $PWD-relative writes land where workers + the user expect.
+	// Pin claude's $PWD to the agent's space (per-orch dir under
+	// ~/Library/Application Support/Director) so all $PWD-relative
+	// writes land where workers + the user expect.
 	spawnArgs = append(spawnArgs, "--cwd", agentSpaceDir(*kind, id, *parent))
 
 	out, err := runCamux(spawnArgs...)

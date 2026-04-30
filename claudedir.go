@@ -88,16 +88,22 @@ func ensureAmuxSession(session, cwd string) error {
 }
 
 // agentSpaceDir returns the working-directory anchor for an agent.
-// Each orchestrator owns ~/Flow/<id>/, workers inherit their orch's,
-// and the dispatcher lives at ~/Flow/. This is THE dimension we use
+// Each orchestrator owns <data>/<id>/, workers inherit their orch's,
+// and the dispatcher lives at <data>/. This is THE dimension we use
 // to keep an orch's domain artifacts (CSVs, notes, scaffolds) from
-// stomping on another orch's. Honors $FLOW_HOME for users who move
-// the data dir.
+// stomping on another orch's.
+//
+// <data> is ~/Library/Application Support/Director by default. Honors
+// $DIRECTOR_HOME first, then $FLOW_HOME (legacy from before the
+// Flow→Director rename) so users with old config keep working.
 func agentSpaceDir(kind, id, parentID string) string {
-	base := os.Getenv("FLOW_HOME")
+	base := os.Getenv("DIRECTOR_HOME")
+	if base == "" {
+		base = os.Getenv("FLOW_HOME")
+	}
 	if base == "" {
 		home, _ := os.UserHomeDir()
-		base = filepath.Join(home, "Flow")
+		base = filepath.Join(home, "Library", "Application Support", "Director")
 	}
 	switch kind {
 	case "orchestrator":
@@ -312,7 +318,7 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("install security shim: %w", err)
 	}
-	// Per-orch space: ~/Flow/<orch-id>/ (workers inherit their parent's).
+	// Per-orch space: <data>/<orch-id>/ (workers inherit their parent's).
 	// mkdir before creating the tmux session so amux's -c flag can land.
 	space := agentSpaceDir(kind, id, parentID)
 	if err := os.MkdirAll(space, 0o755); err != nil {
