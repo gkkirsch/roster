@@ -177,7 +177,10 @@ func prepareBrowserIsolation(kind, id, parentID, session string) (string, error)
 	if err != nil {
 		return "", err
 	}
-	if err := ensureAmuxSession(session); err != nil {
+	// prepareClaudeIsolation runs first and creates the session with the
+	// right cwd; this is a defensive create-if-missing and the cwd arg
+	// is only used when the session truly didn't exist yet.
+	if err := ensureAmuxSession(session, agentSpaceDir(kind, id, parentID)); err != nil {
 		return "", err
 	}
 	port := cdpPortFor(orch)

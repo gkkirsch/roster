@@ -69,15 +69,47 @@ func findOrchestratorAncestor(startID string) (string, error) {
 }
 
 // ensureAmuxSession creates the amux (tmux) session if it doesn't
-// already exist. Safe to call repeatedly.
-func ensureAmuxSession(session string) error {
+// already exist. Safe to call repeatedly. The cwd is set on the
+// session's default window so claude (and any subprocess) starts
+// in the right place — see agentSpaceDir for the per-kind layout.
+func ensureAmuxSession(session, cwd string) error {
 	if err := exec.Command("amux", "exists", session).Run(); err == nil {
 		return nil
 	}
-	if out, err := exec.Command("amux", "new", session).CombinedOutput(); err != nil {
+	args := []string{"new"}
+	if cwd != "" {
+		args = append(args, "-c", cwd)
+	}
+	args = append(args, session)
+	if out, err := exec.Command("amux", args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("amux new %s: %s", session, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// agentSpaceDir returns the working-directory anchor for an agent.
+// Each orchestrator owns ~/Flow/<id>/, workers inherit their orch's,
+// and the dispatcher lives at ~/Flow/. This is THE dimension we use
+// to keep an orch's domain artifacts (CSVs, notes, scaffolds) from
+// stomping on another orch's. Honors $FLOW_HOME for users who move
+// the data dir.
+func agentSpaceDir(kind, id, parentID string) string {
+	base := os.Getenv("FLOW_HOME")
+	if base == "" {
+		home, _ := os.UserHomeDir()
+		base = filepath.Join(home, "Flow")
+	}
+	switch kind {
+	case "orchestrator":
+		return filepath.Join(base, id)
+	case "worker":
+		orch, _ := findOrchestratorAncestor(parentID)
+		if orch != "" {
+			return filepath.Join(base, orch)
+		}
+		return base
+	}
+	return base // dispatcher and anything else
 }
 
 // setTmuxSessionEnv sets one env var on a tmux session. Subsequent
@@ -280,10 +312,21 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	if err != nil {
 		return "", fmt.Errorf("install security shim: %w", err)
 	}
-	if err := ensureAmuxSession(session); err != nil {
+	// Per-orch space: ~/Flow/<orch-id>/ (workers inherit their parent's).
+	// mkdir before creating the tmux session so amux's -c flag can land.
+	space := agentSpaceDir(kind, id, parentID)
+	if err := os.MkdirAll(space, 0o755); err != nil {
+		return "", fmt.Errorf("mkdir agent space: %w", err)
+	}
+	if err := ensureAmuxSession(session, space); err != nil {
 		return "", err
 	}
 	if err := setTmuxSessionEnv(session, "CLAUDE_CONFIG_DIR", dir); err != nil {
+		return "", err
+	}
+	// Also set FLOW_SPACE on the session env so prompts and skills can
+	// reference "$FLOW_SPACE" symbolically without hardcoding the path.
+	if err := setTmuxSessionEnv(session, "FLOW_SPACE", space); err != nil {
 		return "", err
 	}
 	shimDir := filepath.Dir(shim)

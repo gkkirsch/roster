@@ -81,6 +81,9 @@ func cmdSpawn(args []string) error {
 
 	spawnArgs := append([]string{"spawn", session}, camuxFlags...)
 	spawnArgs = append(spawnArgs, "--timeout", rawTimeout.String())
+	// Pin claude's $PWD to the agent's space (~/Flow/<orch>/) so all
+	// $PWD-relative writes land where workers + the user expect.
+	spawnArgs = append(spawnArgs, "--cwd", agentSpaceDir(*kind, id, *parent))
 
 	out, err := runCamux(spawnArgs...)
 	if err != nil {
@@ -421,6 +424,7 @@ func cmdResume(args []string) error {
 	if a.SessionUUID != "" {
 		flags = append(flags, "--resume", a.SessionUUID)
 	}
+	flags = append(flags, "--cwd", agentSpaceDir(a.Kind, a.ID, a.Parent))
 	spawnArgs := append([]string{"spawn", session}, flags...)
 	out, err := runCamux(spawnArgs...)
 	if err != nil && a.SessionUUID != "" {
