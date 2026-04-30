@@ -499,7 +499,10 @@ func cmdForget(args []string) error {
 
 func cmdNotify(args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: roster notify <to-id> \"<message>\" [--from <id>] [--wait-ready 30s]")
+		return fmt.Errorf("usage: roster notify <to-id> \"<message>\" [--from <id>] [--wait-ready 30s]\n" +
+			"  Bash expands $vars and backticks BEFORE roster sees the message —\n" +
+			"  '$19/mo' becomes '9/mo'. Use single quotes 'price is $19', backslash\n" +
+			"  \"\\$19\", or a heredoc <<'EOF'…EOF when the message has special chars.")
 	}
 	to := args[0]
 	msg := args[1]

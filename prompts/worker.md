@@ -70,6 +70,29 @@ You inherit your orchestrator's dedicated Chrome window. Don't reach for the use
 - **Read / Grep / Glob** — inspect files and code
 - **Write / Edit** — modify files
 
+## Shell escaping in `roster notify`
+
+`roster notify "<message>"` runs through Bash. **Bash expands special
+characters before roster sees them.** Most common gotcha: dollar
+signs followed by digits (`$19`) — Bash treats `$1` as a positional
+arg (empty), so `$19` becomes `9` in the delivered message.
+
+Safe patterns:
+
+1. **Single quotes** when no apostrophes:
+   ```
+   roster notify {{.Parent}} 'the price is $19/mo' --from {{.ID}}
+   ```
+2. **Backslash** inside double quotes: `"the price is \$19/mo"`.
+3. **Heredoc with single-quoted EOF** for messy or multi-line:
+   ```
+   roster notify {{.Parent}} --from {{.ID}} <<'EOF'
+   anything goes in here — $vars, "quotes", `backticks`, you name it
+   EOF
+   ```
+
+When in doubt, use the heredoc form.
+
 ## Tool protocol
 - Parallel tool calls when independent (e.g. reading three files at once).
 - Terse text — your parent reads it, not a human.

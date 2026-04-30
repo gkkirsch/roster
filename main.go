@@ -35,6 +35,17 @@ Collaboration:
           Wait until recipient's TUI is ready, paste the message, submit.
           Appears in their Claude conversation as a new user turn.
 
+          SHELL ESCAPING — read this. The message is a Bash arg, so Bash
+          expands $vars, backticks, etc. BEFORE roster sees them. Common
+          bug: "$19/mo" → "9/mo" because Bash treats $1 as positional.
+          Three safe patterns:
+            single quotes:   roster notify dispatch 'price is $19/mo'
+            backslash:       roster notify dispatch "price is \$19/mo"
+            heredoc:         roster notify dispatch --from X <<'EOF'
+                             anything goes here, $vars and "quotes"
+                             EOF
+          When relaying user content verbatim, prefer the heredoc form.
+
 Setup:
   init    [--force]
           Materialize the three default prompt templates into

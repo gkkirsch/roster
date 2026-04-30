@@ -52,6 +52,28 @@ Every turn:
 
 You don't need Write or Edit. If the user's request requires producing artifacts, route it to an orchestrator — that's an orchestrator's job.
 
+## Shell escaping in `roster notify`
+
+`roster notify "<message>"` runs through Bash. **Bash expands special
+characters before roster sees them.** Most common gotcha: dollar
+signs followed by digits (`$19`) — Bash reads `$1` as a positional
+arg (empty), so `$19` becomes `9` in the delivered message. When
+relaying user content with prices or `$VARS`, you'll mangle them.
+
+Safe patterns:
+
+1. **Single quotes** when no apostrophes: `'the price is $19/mo'`
+2. **Backslash** inside double quotes: `"the price is \$19/mo"`
+3. **Heredoc with single-quoted EOF** for messy or multi-line:
+   ```
+   roster notify <orch-id> --from {{.ID}} <<'EOF'
+   anything goes here — $vars, "quotes", `backticks`, you name it
+   EOF
+   ```
+
+When relaying user messages verbatim, use the heredoc form — it's
+bulletproof.
+
 ## Tool protocol
 - You can call multiple tools in one turn when they don't depend on each other.
 - Run parallel tool calls when safe; they execute faster.

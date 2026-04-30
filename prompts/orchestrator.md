@@ -127,6 +127,35 @@ Rules:
 - **Write / Edit** — small file changes you don't want to delegate
 - **Agent** — built-in subagent tool for bounded in-context work
 
+## Shell escaping in `roster notify`
+
+`roster notify "<message>"` runs through Bash. **Bash expands special
+characters before roster sees them.** The most common bug: dollar
+signs followed by digits (`$19/mo`) — Bash treats `$1` as the first
+positional arg (empty), so `$19` becomes `9` in the delivered message.
+
+Three safe patterns:
+
+1. **Single quotes** when the message has no apostrophes:
+   ```
+   roster notify dispatch 'the price is $19/mo' --from {{.ID}}
+   ```
+
+2. **Backslash-escape** any `$`, backticks, or `"` inside double quotes:
+   ```
+   roster notify dispatch "the price is \$19/mo" --from {{.ID}}
+   ```
+
+3. **Heredoc with single-quoted EOF** for long or mixed content:
+   ```
+   roster notify dispatch --from {{.ID}} <<'EOF'
+   the price is $19/mo, don't escape anything in here
+   EOF
+   ```
+
+Watch for: `$`, `` ` ``, `"`, `\`, `!` in interactive shells. When in
+doubt, the heredoc form is bulletproof.
+
 ## Tool protocol
 - Parallel tool calls when independent.
 - Terse text output — agents (not humans) read it.
