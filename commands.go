@@ -498,19 +498,64 @@ func cmdForget(args []string) error {
 // --- notify -----------------------------------------------------------------
 
 func cmdNotify(args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("usage: roster notify <to-id> \"<message>\" [--from <id>] [--wait-ready 30s]\n" +
-			"  Bash expands $vars and backticks BEFORE roster sees the message —\n" +
-			"  '$19/mo' becomes '9/mo'. Use single quotes 'price is $19', backslash\n" +
-			"  \"\\$19\", or a heredoc <<'EOF'…EOF when the message has special chars.")
+	usage := "usage: roster notify <to-id> \"<message>\" [--from <id>] [--wait-ready 30s]\n" +
+		"  Bash expands $vars and backticks BEFORE roster sees the message —\n" +
+		"  '$19/mo' becomes '9/mo'. Use single quotes 'price is $19', backslash\n" +
+		"  \"\\$19\", or a heredoc <<'EOF'…EOF when the message has special chars."
+	// Pull <to-id> and <message> out as the first two non-flag args so users
+	// can write `notify --from X --wait-ready 5s <to> "<msg>"` OR
+	// `notify <to> "<msg>" --from X --wait-ready 5s`. Go's flag.Parse stops
+	// at the first non-flag, which would force one ordering otherwise.
+	flagsWithValue := map[string]bool{
+		"--from": true, "-from": true,
+		"--wait-ready": true, "-wait-ready": true,
 	}
-	to := args[0]
-	msg := args[1]
+	var positional []string
+	var passthrough []string
+	skipNext := false
+	for _, a := range args {
+		if skipNext {
+			passthrough = append(passthrough, a)
+			skipNext = false
+			continue
+		}
+		if !strings.HasPrefix(a, "-") && len(positional) < 2 {
+			positional = append(positional, a)
+			continue
+		}
+		passthrough = append(passthrough, a)
+		if flagsWithValue[a] {
+			skipNext = true
+		}
+	}
+	if len(positional) < 1 {
+		return fmt.Errorf("%s", usage)
+	}
+	to := positional[0]
+	var msg string
+	switch {
+	case len(positional) >= 2:
+		msg = positional[1]
+	case !isTTY(os.Stdin):
+		// Heredoc / pipe form: `roster notify dispatch <<'EOF'…EOF`. Reading
+		// from stdin sidesteps Bash $-expansion entirely, which is the safe
+		// option `roster help` advertises for messages with shell metachars.
+		body, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("notify: read stdin: %w", err)
+		}
+		msg = strings.TrimRight(string(body), "\n")
+		if msg == "" {
+			return fmt.Errorf("notify: stdin was empty\n%s", usage)
+		}
+	default:
+		return fmt.Errorf("%s", usage)
+	}
 	fs := flag.NewFlagSet("notify", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	from := fs.String("from", "", "id of the sender (optional; prepended to the delivered message)")
 	waitReady := fs.Duration("wait-ready", 30*time.Second, "how long to wait for recipient to be ready")
-	if err := fs.Parse(args[2:]); err != nil {
+	if err := fs.Parse(passthrough); err != nil {
 		return err
 	}
 	a, err := loadAgent(to)
