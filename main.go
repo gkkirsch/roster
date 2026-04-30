@@ -61,6 +61,12 @@ Setup:
           see what an agent will actually see.
   prompt edit <kind>
           Open the template in $EDITOR.
+  doctor  [--fix]
+          Diagnose common config issues: agent-browser wrapper + sidecar,
+          stale agent-browser daemons, orphan Chrome processes from
+          auto-launch, claude binary, tmux server, browser profiles for
+          forgotten orchs. --fix removes orphan/stale daemons and stale
+          browser profiles.
 
 Environment:
   CAMUX_BIN     overrides the camux executable name
@@ -119,6 +125,8 @@ func main() {
 		err = cmdArtifact(args)
 	case "schedule", "schedules":
 		err = cmdSchedule(args)
+	case "doctor":
+		err = cmdDoctor(args)
 	default:
 		fmt.Fprintf(os.Stderr, "roster: unknown command %q\n\n", cmd)
 		fmt.Fprint(os.Stderr, usageText)

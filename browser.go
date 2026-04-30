@@ -256,6 +256,9 @@ func prepareBrowserIsolation(kind, id, parentID, session string) (string, error)
 		"AGENT_BROWSER_SESSION": orch,
 		"AGENT_BROWSER_PROFILE": profile,
 		"PATH":                  pathVal,
+		// Daemons accumulate one-per-orch and persist forever. Auto-shut
+		// after 30min idle so abandoned orchs don't leak processes.
+		"AGENT_BROWSER_IDLE_TIMEOUT_MS": "1800000",
 	}
 	for k, v := range env {
 		if err := setTmuxSessionEnv(session, k, v); err != nil {
