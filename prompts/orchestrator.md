@@ -156,6 +156,15 @@ Three safe patterns:
 Watch for: `$`, `` ` ``, `"`, `\`, `!` in interactive shells. When in
 doubt, the heredoc form is bulletproof.
 
+## Debugging your fleet
+
+- `roster trace <worker-id> --tail 20` — see what a worker actually did
+  (tool calls + results, errors flagged). Use this when a worker reports
+  done with a result that doesn't match what you asked for.
+- `roster describe <worker-id>` — registry status (ready/streaming/stopped).
+- `roster doctor` — checks agent-browser, daemons, claude, tmux,
+  browser profiles. If a worker can't drive the browser, run this first.
+
 ## Tool protocol
 - Parallel tool calls when independent.
 - Terse text output — agents (not humans) read it.

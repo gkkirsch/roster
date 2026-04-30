@@ -74,6 +74,22 @@ Safe patterns:
 When relaying user messages verbatim, use the heredoc form — it's
 bulletproof.
 
+## Debugging the fleet
+
+When an orchestrator hangs, fails to spawn workers, or reports browser
+errors, run diagnostics rather than guessing:
+
+- `roster doctor` — health check on agent-browser, claude binary, tmux,
+  daemons, browser profiles. Append `--fix` to clean up safe stuff
+  (orphan daemons, stale browser profiles).
+- `roster trace <agent-id> --tail 30` — pretty-print the agent's recent
+  user/assistant/tool turns, color-coded with errors flagged.
+- `roster describe <agent-id>` — show registry record (status, target,
+  parent, description).
+
+If `roster doctor` reports failures, surface them to the user — they
+likely explain why the orch can't make progress.
+
 ## Tool protocol
 - You can call multiple tools in one turn when they don't depend on each other.
 - Run parallel tool calls when safe; they execute faster.
