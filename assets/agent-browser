@@ -77,8 +77,11 @@ chrome_alive() {
 # reference to a Chrome that has since been closed. When that happens
 # agent-browser ignores --cdp and tries to use the dead browser. Detect
 # (Chrome dead + daemon alive) and kill the daemon so it respawns clean.
+# AGENT_BROWSER_SESSION defaults to "default" inside agent-browser, so we
+# match that fallback when env doesn't override it.
+session_name="${AGENT_BROWSER_SESSION:-default}"
 session_dir="$HOME/.agent-browser"
-session_pid_file="$session_dir/${AGENT_BROWSER_SESSION}.pid"
+session_pid_file="$session_dir/${session_name}.pid"
 if [[ -f "$session_pid_file" ]] && ! chrome_alive; then
   daemon_pid=$(cat "$session_pid_file" 2>/dev/null || true)
   if [[ -n "$daemon_pid" ]] && kill -0 "$daemon_pid" 2>/dev/null; then
@@ -88,26 +91,34 @@ if [[ -f "$session_pid_file" ]] && ! chrome_alive; then
       sleep 0.1
     done
   fi
-  rm -f "$session_dir/${AGENT_BROWSER_SESSION}".{pid,sock,stream,version} 2>/dev/null || true
+  rm -f "$session_dir/${session_name}".{pid,sock,stream,version} 2>/dev/null || true
 fi
 
 if ! chrome_alive; then
-  if [[ -n "${AGENT_BROWSER_PROFILE:-}" ]]; then
-    open -na "Google Chrome" --args \
-      --user-data-dir="$AGENT_BROWSER_PROFILE" \
-      --remote-debugging-port="$AGENT_BROWSER_CDP" \
-      --no-first-run \
-      --no-default-browser-check \
-      --window-size=1280,800 \
-      about:blank >/dev/null 2>&1 || true
-    # Wait up to ~6s for Chrome to bind the port. Mirrors fleetview's
-    # 40 × 150ms poll in launchChrome.
-    for _ in $(seq 1 40); do
-      if chrome_alive; then
-        break
-      fi
-      sleep 0.15
-    done
+  if [[ -z "${AGENT_BROWSER_PROFILE:-}" ]]; then
+    echo "agent-browser: AGENT_BROWSER_PROFILE not set — can't launch isolated Chrome on port ${AGENT_BROWSER_CDP}. Spawn this agent through roster so the per-orch profile is provisioned." >&2
+    exit 2
+  fi
+  open -na "Google Chrome" --args \
+    --user-data-dir="$AGENT_BROWSER_PROFILE" \
+    --remote-debugging-port="$AGENT_BROWSER_CDP" \
+    --no-first-run \
+    --no-default-browser-check \
+    --window-size=1280,800 \
+    about:blank >/dev/null 2>&1 || true
+  # Wait up to ~6s for Chrome to bind the port. Mirrors fleetview's
+  # 40 × 150ms poll in launchChrome.
+  for _ in $(seq 1 40); do
+    if chrome_alive; then
+      break
+    fi
+    sleep 0.15
+  done
+  if ! chrome_alive; then
+    echo "agent-browser: Chrome failed to bind 127.0.0.1:${AGENT_BROWSER_CDP} within 6s." >&2
+    echo "agent-browser:   profile: ${AGENT_BROWSER_PROFILE}" >&2
+    echo "agent-browser:   try: \`roster doctor\` to inspect Chrome / daemon state" >&2
+    exit 2
   fi
 fi
 

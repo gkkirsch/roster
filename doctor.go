@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -28,6 +29,7 @@ func cmdDoctor(args []string) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fix := fs.Bool("fix", false, "clean up safe stuff: stale daemons (>1d old), browser profiles for forgotten orchs")
+	asJSON := fs.Bool("json", false, "emit a JSON document {checks: [{level, title, detail}], failed}")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -39,7 +41,11 @@ func cmdDoctor(args []string) error {
 	checkBrowserProfiles(r, *fix)
 	checkChromeOrphans(r, *fix)
 
-	r.print(os.Stdout)
+	if *asJSON {
+		r.printJSON(os.Stdout)
+	} else {
+		r.print(os.Stdout)
+	}
 	if r.fail > 0 {
 		return fmt.Errorf("%d failed check(s)", r.fail)
 	}
@@ -76,6 +82,31 @@ func (r *report) print(w io.Writer) {
 			}
 		}
 	}
+}
+
+func (r *report) printJSON(w io.Writer) {
+	type entry struct {
+		Level  string `json:"level"`
+		Title  string `json:"title"`
+		Detail string `json:"detail,omitempty"`
+	}
+	out := struct {
+		Failed int     `json:"failed"`
+		Checks []entry `json:"checks"`
+	}{Failed: r.fail}
+	for _, l := range r.lines {
+		level := "ok"
+		switch l.level {
+		case '⚠':
+			level = "warn"
+		case '✗':
+			level = "fail"
+		}
+		out.Checks = append(out.Checks, entry{Level: level, Title: l.title, Detail: l.detail})
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	_ = enc.Encode(out)
 }
 
 // --- agent-browser checks ---------------------------------------------------
