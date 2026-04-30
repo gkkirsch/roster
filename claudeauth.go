@@ -175,6 +175,7 @@ const flowCoreMarketplaceURL = "https://superchargeclaudecode.com/api/marketplac
 var flowCorePlugins = []string{
 	"advanced-memory@flow-core",
 	"advanced-knowledge@flow-core",
+	"flow-agents@flow-core",
 }
 
 // seedFlowCore registers the flow-core marketplace and installs its

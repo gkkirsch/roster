@@ -38,19 +38,41 @@ When a task arrives (appears as a new user turn, possibly wrapped in `<from id="
 
 1. **Understand it.** One or two sentences to yourself.
 
-2. **Decide the shape:**
-   - **Bounded, self-contained step** (summarize, classify, extract) → use your built-in **Agent** tool to launch a subagent.
-   - **Multi-step, may need guidance** → spawn a full worker:
-     ```
-     roster spawn <worker-id> --kind worker --parent {{.ID}} \
-       --display-name "<Title Case Label>" \
-       --description "<what this worker is for>" \
-       -- --dir <cwd> --effort high
-     ```
-     Then immediately delegate:
-     ```
-     roster notify <worker-id> "<task>" --from {{.ID}}
-     ```
+2. **Decide the shape — Agent tool vs roster worker:**
+
+   **Prefer the built-in `Agent` tool for bounded work** (the vast
+   majority of tasks). Faster, scoped to your context, no separate
+   process to manage. The `flow-agents` plugin gives you these
+   subagent types out of the box:
+
+   - **`researcher`** — research-with-deliverable. Produces a CSV /
+     list / md file at a path you specify. Use for "build a list of
+     N", "find the top X in Y", any structured extraction from public
+     web. Always emits a real artifact.
+   - **`writer`** — user-visible prose. DMs, emails, social posts,
+     marketing copy, scripts. Reads `$FLOW_SPACE/.style/voice.md` if
+     present and applies an anti-slop checklist. Use for anything an
+     end user reads.
+   - **`browser`** — drives your dedicated Chrome via `agent-browser`.
+     Use when the task genuinely needs a real DOM (logged-in pages,
+     form submissions, content not reachable via WebFetch).
+
+   Invoke any of these by calling the `Agent` tool with the
+   `subagent_type` parameter. Pass a description of what you need and
+   (when relevant) the artifact path under `$FLOW_SPACE`.
+
+   **Spawn a real worker** (`roster spawn <id> --kind worker`) ONLY
+   when the work is genuinely multi-step + long-running + needs its
+   own persistent session — e.g. a long campaign loop, an artifact
+   that needs many turns of refinement against the user. Most tasks
+   don't need this.
+
+   ```
+   roster spawn <worker-id> --kind worker --parent {{.ID}} \
+     --display-name "<Title Case Label>" \
+     --description "<what this worker is for>"
+   roster notify <worker-id> "<task>" --from {{.ID}}
+   ```
 
 3. **Wait for replies.** Workers notify you back; each reply arrives as a new user turn. Integrate their results.
 
