@@ -93,14 +93,10 @@ func ensureAmuxSession(session, cwd string) error {
 // to keep an orch's domain artifacts (CSVs, notes, scaffolds) from
 // stomping on another orch's.
 //
-// <data> is ~/Library/Application Support/Director by default. Honors
-// $DIRECTOR_HOME first, then $FLOW_HOME (legacy from before the
-// Flow→Director rename) so users with old config keep working.
+// <data> is ~/Library/Application Support/Director by default; honors
+// $DIRECTOR_HOME for users who want to relocate it.
 func agentSpaceDir(kind, id, parentID string) string {
 	base := os.Getenv("DIRECTOR_HOME")
-	if base == "" {
-		base = os.Getenv("FLOW_HOME")
-	}
 	if base == "" {
 		home, _ := os.UserHomeDir()
 		base = filepath.Join(home, "Library", "Application Support", "Director")
@@ -330,9 +326,10 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	if err := setTmuxSessionEnv(session, "CLAUDE_CONFIG_DIR", dir); err != nil {
 		return "", err
 	}
-	// Also set FLOW_SPACE on the session env so prompts and skills can
-	// reference "$FLOW_SPACE" symbolically without hardcoding the path.
-	if err := setTmuxSessionEnv(session, "FLOW_SPACE", space); err != nil {
+	// Also set DIRECTOR_SPACE on the session env so prompts and skills
+	// can reference "$DIRECTOR_SPACE" symbolically without hardcoding
+	// the path.
+	if err := setTmuxSessionEnv(session, "DIRECTOR_SPACE", space); err != nil {
 		return "", err
 	}
 	shimDir := filepath.Dir(shim)

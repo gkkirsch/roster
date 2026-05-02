@@ -95,29 +95,16 @@ if [[ -f "$session_pid_file" ]] && ! chrome_alive; then
 fi
 
 if ! chrome_alive; then
-  if [[ -z "${AGENT_BROWSER_PROFILE:-}" ]]; then
-    echo "agent-browser: AGENT_BROWSER_PROFILE not set — can't launch isolated Chrome on port ${AGENT_BROWSER_CDP}. Spawn this agent through roster so the per-orch profile is provisioned." >&2
+  # Delegate to roster — single source of truth for per-orch profile,
+  # port, identity (name+color), and launch. Roster polls until Chrome
+  # binds the port, so we don't need our own poll loop here.
+  if ! roster browser launch "$session_name" >/dev/null 2>&1; then
+    echo "agent-browser: \`roster browser launch $session_name\` failed." >&2
+    echo "agent-browser:   try: \`roster doctor\` to inspect Chrome / daemon state" >&2
     exit 2
   fi
-  open -na "Google Chrome" --args \
-    --user-data-dir="$AGENT_BROWSER_PROFILE" \
-    --remote-debugging-port="$AGENT_BROWSER_CDP" \
-    --no-first-run \
-    --no-default-browser-check \
-    --window-size=1280,800 \
-    about:blank >/dev/null 2>&1 || true
-  # Wait up to ~6s for Chrome to bind the port. Mirrors fleetview's
-  # 40 × 150ms poll in launchChrome.
-  for _ in $(seq 1 40); do
-    if chrome_alive; then
-      break
-    fi
-    sleep 0.15
-  done
   if ! chrome_alive; then
-    echo "agent-browser: Chrome failed to bind 127.0.0.1:${AGENT_BROWSER_CDP} within 6s." >&2
-    echo "agent-browser:   profile: ${AGENT_BROWSER_PROFILE}" >&2
-    echo "agent-browser:   try: \`roster doctor\` to inspect Chrome / daemon state" >&2
+    echo "agent-browser: Chrome failed to bind 127.0.0.1:${AGENT_BROWSER_CDP} after roster launch." >&2
     exit 2
   fi
 fi

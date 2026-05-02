@@ -127,6 +127,8 @@ func main() {
 		err = cmdSchedule(args)
 	case "doctor":
 		err = cmdDoctor(args)
+	case "browser":
+		err = cmdBrowser(args)
 	default:
 		fmt.Fprintf(os.Stderr, "roster: unknown command %q\n\n", cmd)
 		fmt.Fprint(os.Stderr, usageText)

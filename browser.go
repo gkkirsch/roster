@@ -3,12 +3,18 @@ package main
 import (
 	"bytes"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"math"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Per-orchestrator browser isolation. One Chrome profile per orch, one
@@ -242,6 +248,14 @@ func prepareBrowserIsolation(kind, id, parentID, session string) (string, error)
 	if err != nil {
 		return "", err
 	}
+	// Stamp <profile>/Default/Preferences with the orch's name + tint
+	// before Chrome ever boots. Fleetview's globe button does the same
+	// thing, but agents launch Chrome via the wrapper script which
+	// doesn't — so without this, agent-launched Chrome shows up as
+	// "Person 1" with the default theme.
+	if err := writeProfileIdentity(profile, orch); err != nil {
+		fmt.Fprintf(os.Stderr, "roster: writeProfileIdentity %s: %v\n", orch, err)
+	}
 	// prepareClaudeIsolation runs first and creates the session with the
 	// right cwd; this is a defensive create-if-missing and the cwd arg
 	// is only used when the session truly didn't exist yet.
@@ -266,4 +280,216 @@ func prepareBrowserIsolation(kind, id, parentID, session string) (string, error)
 		}
 	}
 	return orch, nil
+}
+
+// writeProfileIdentity sets the profile name (= orch ID) and a
+// deterministic theme color in <profile>/Default/Preferences. Chrome
+// reads this on first launch when there's no Secure Preferences yet,
+// so a fresh profile picks up our name+tint and you can tell the
+// windows apart at a glance. Mirrors fleetview's launcher — kept in
+// sync so identity is written regardless of which path launches Chrome.
+func writeProfileIdentity(profileDir, orchID string) error {
+	defaultDir := filepath.Join(profileDir, "Default")
+	if err := os.MkdirAll(defaultDir, 0o755); err != nil {
+		return err
+	}
+	prefsPath := filepath.Join(defaultDir, "Preferences")
+	prefs := map[string]any{}
+	if b, err := os.ReadFile(prefsPath); err == nil {
+		_ = json.Unmarshal(b, &prefs)
+	}
+	profile, _ := prefs["profile"].(map[string]any)
+	if profile == nil {
+		profile = map[string]any{}
+	}
+	profile["name"] = orchID
+	profile["using_default_name"] = false
+	profile["using_default_avatar"] = false
+	profile["using_gaia_avatar"] = false
+	prefs["profile"] = profile
+
+	browser, _ := prefs["browser"].(map[string]any)
+	if browser == nil {
+		browser = map[string]any{}
+	}
+	theme, _ := browser["theme"].(map[string]any)
+	if theme == nil {
+		theme = map[string]any{}
+	}
+	theme["user_color"] = colorForOrch(orchID)
+	browser["theme"] = theme
+	prefs["browser"] = browser
+
+	out, err := json.MarshalIndent(prefs, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(prefsPath, out, 0o644)
+}
+
+func colorForOrch(orchID string) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(orchID))
+	hue := float64(h.Sum32()%360) / 360.0
+	r, g, b := hslToRGB(hue, 0.55, 0.55)
+	return (r << 16) | (g << 8) | b
+}
+
+func hslToRGB(h, s, l float64) (int, int, int) {
+	if s == 0 {
+		v := int(math.Round(l * 255))
+		return v, v, v
+	}
+	var q float64
+	if l < 0.5 {
+		q = l * (1 + s)
+	} else {
+		q = l + s - l*s
+	}
+	p := 2*l - q
+	r := hueToRGB(p, q, h+1.0/3)
+	g := hueToRGB(p, q, h)
+	b := hueToRGB(p, q, h-1.0/3)
+	return int(math.Round(r * 255)), int(math.Round(g * 255)), int(math.Round(b * 255))
+}
+
+func hueToRGB(p, q, t float64) float64 {
+	if t < 0 {
+		t += 1
+	}
+	if t > 1 {
+		t -= 1
+	}
+	if t < 1.0/6 {
+		return p + (q-p)*6*t
+	}
+	if t < 1.0/2 {
+		return q
+	}
+	if t < 2.0/3 {
+		return p + (q-p)*(2.0/3-t)*6
+	}
+	return p
+}
+
+// chromeAlive probes the CDP /json/version endpoint with a short
+// timeout. Anything other than a 2xx counts as not-alive.
+func chromeAlive(port int) bool {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	client := http.Client{Timeout: 800 * time.Millisecond}
+	resp, err := client.Get("http://" + addr + "/json/version")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+func chromeBinary() string {
+	if v := os.Getenv("CHROME_BIN"); v != "" {
+		return v
+	}
+	for _, p := range []string{
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+		"/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
+}
+
+// launchChrome ensures Chrome is running for orchID with the per-orch
+// profile + CDP port. No-op (returns the existing port/profile) if
+// Chrome on that port is already alive. The flag-set is deliberately
+// minimal so Chrome behaves like a normal user session — see fleetview's
+// pre-consolidation comment for the reasoning around --enable-automation
+// and --disable-blink-features.
+func launchChrome(orchID string) (port int, profile string, err error) {
+	port = cdpPortFor(orchID)
+	profile, err = browserProfileDir(orchID)
+	if err != nil {
+		return port, "", err
+	}
+	if chromeAlive(port) {
+		return port, profile, nil
+	}
+	if err := writeProfileIdentity(profile, orchID); err != nil {
+		fmt.Fprintf(os.Stderr, "roster: writeProfileIdentity %s: %v\n", orchID, err)
+	}
+	chrome := chromeBinary()
+	if chrome == "" {
+		return port, profile, fmt.Errorf("Google Chrome not found on this system")
+	}
+	cmd := exec.Command(chrome,
+		"--user-data-dir="+profile,
+		"--remote-debugging-port="+strconv.Itoa(port),
+		"--no-first-run",
+		"--no-default-browser-check",
+		"--window-size=1280,800",
+		"about:blank",
+	)
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	if err := cmd.Start(); err != nil {
+		return port, profile, err
+	}
+	go func() { _ = cmd.Wait() }()
+	for i := 0; i < 40; i++ {
+		if chromeAlive(port) {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return port, profile, nil
+}
+
+// browserStatus is what `roster browser status|launch` prints — same
+// shape fleetview's HTTP handler returns, so the UI can pass it through.
+type browserStatus struct {
+	OrchID  string `json:"orch_id"`
+	Port    int    `json:"port"`
+	Profile string `json:"profile"`
+	Alive   bool   `json:"alive"`
+	Error   string `json:"error,omitempty"`
+}
+
+// cmdBrowser implements `roster browser status|launch <orch>`. JSON-only
+// output to stdout; meant for fleetview (and the agent-browser wrapper)
+// to shell out to instead of duplicating the launch logic.
+func cmdBrowser(args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: roster browser status|launch <orch-id>")
+	}
+	sub, orch := args[0], args[1]
+	if err := validateID(orch); err != nil {
+		return err
+	}
+	port := cdpPortFor(orch)
+	profile, err := browserProfileDir(orch)
+	if err != nil {
+		return err
+	}
+	s := browserStatus{OrchID: orch, Port: port, Profile: profile}
+	switch sub {
+	case "status":
+		s.Alive = chromeAlive(port)
+	case "launch":
+		_, _, lerr := launchChrome(orch)
+		s.Alive = chromeAlive(port)
+		if lerr != nil {
+			s.Error = lerr.Error()
+		}
+	default:
+		return fmt.Errorf("unknown browser subcommand %q (want status|launch)", sub)
+	}
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(s)
 }
