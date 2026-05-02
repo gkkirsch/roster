@@ -45,10 +45,21 @@ func cmdSpawn(args []string) error {
 		return fmt.Errorf("spawn: --parent %q not in roster", *parent)
 	}
 
+	// Resolve the orch's two directories now so the system prompt
+	// can reference them as literal absolute paths — no $env_var
+	// expansion required at runtime. claudeDirFor returns "" for
+	// kinds that share their parent's claude dir (workers); the
+	// template handles "" gracefully.
+	claudeDir, err := claudeDirFor(*kind, id, *parent)
+	if err != nil {
+		return fmt.Errorf("spawn: resolve claude dir: %w", err)
+	}
 	systemPrompt, err := renderPrompt(*kind, promptData{
 		ID:          id,
 		Parent:      *parent,
 		Description: *description,
+		Space:       agentSpaceDir(*kind, id, *parent),
+		ClaudeDir:   claudeDir,
 	})
 	if err != nil {
 		return fmt.Errorf("spawn: render system prompt: %w", err)
@@ -654,7 +665,17 @@ func cmdPrompt(args []string) error {
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
 		}
-		out, err := renderPrompt(kind, promptData{ID: *id, Parent: *parent, Description: *desc})
+		// `roster prompt show` is for inspection. Fill Space + ClaudeDir
+		// with what real spawns would resolve them to, so the rendered
+		// preview matches what an orch would actually see.
+		claudeDir, _ := claudeDirFor(kind, *id, *parent)
+		out, err := renderPrompt(kind, promptData{
+			ID:          *id,
+			Parent:      *parent,
+			Description: *desc,
+			Space:       agentSpaceDir(kind, *id, *parent),
+			ClaudeDir:   claudeDir,
+		})
 		if err != nil {
 			return err
 		}

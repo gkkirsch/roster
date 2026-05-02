@@ -13,10 +13,20 @@ import (
 var embeddedPrompts embed.FS
 
 // promptData is the template context passed to all prompt templates.
+//
+// Space + ClaudeDir are resolved to absolute paths at render time so
+// templates can reference the orch's two directories literally,
+// without depending on env-var expansion at runtime. This matters for
+// "install a skill into your claude dir"-style instructions: when the
+// prompt says `$CLAUDE_CONFIG_DIR/skills/...`, the orch sometimes
+// invents a project-local `.claude/skills/` instead. Inlining the
+// resolved path removes that ambiguity.
 type promptData struct {
 	ID          string
 	Parent      string
 	Description string
+	Space       string // absolute path to <data>/<orch-id>/  ($DIRECTOR_SPACE)
+	ClaudeDir   string // absolute path to per-orch CLAUDE_CONFIG_DIR
 }
 
 // Edits in promptsDir() override the embedded defaults.
