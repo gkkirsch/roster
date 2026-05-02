@@ -6,8 +6,8 @@ File-backed registry for Claude agents. Phone book + voicemail on top of
 enough state to resume them across sessions.
 
 ```
-roster spawn dispatch --kind dispatcher --description "routes user requests"
-roster spawn orch-code --kind orchestrator --parent dispatch --description "owns ~/dev/amux"
+roster spawn director --kind dispatcher --description "routes user requests"
+roster spawn orch-code --kind orchestrator --parent director --description "owns ~/dev/amux"
 roster spawn plan-01 --kind worker --parent orch-code --description "plans the auth refactor"
 
 roster tree
@@ -15,7 +15,7 @@ roster tree
 # └── orch-code (orchestrator) [ready]  — owns ~/dev/amux
 #     └── plan-01 (worker) [ready]  — plans the auth refactor
 
-roster notify orch-code "please ask plan-01 for the auth plan" --from dispatch
+roster notify orch-code "please ask plan-01 for the auth plan" --from director
 # → appears as a new user turn in orch-code's TUI; orch-code's Claude
 #   reads it and responds according to its system prompt
 ```
@@ -103,11 +103,11 @@ engine.
 helpers). End-to-end dogfood run:
 
 - dispatcher spawned
-- orchestrator spawned with `--parent dispatch`
+- orchestrator spawned with `--parent director`
 - worker spawned with `--parent orch-code`
-- external notify dispatch→orch; orch did work; orch auto-called
-  `roster notify dispatch "..."` to report back
-- full 4-hop relay: dispatch → orch → worker → orch → dispatch, all
+- external notify director→orch; orch did work; orch auto-called
+  `roster notify director "..."` to report back
+- full 4-hop relay: director → orch → worker → orch → director, all
   messages delivered as user turns, each Claude forwarded via its
   Bash tool
 - stop + resume preserved the conversation (orch recalled its prior

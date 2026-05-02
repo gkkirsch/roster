@@ -44,9 +44,9 @@ Collaboration:
           expands $vars, backticks, etc. BEFORE roster sees them. Common
           bug: "$19/mo" → "9/mo" because Bash treats $1 as positional.
           Three safe patterns:
-            single quotes:   roster notify dispatch 'price is $19/mo'
-            backslash:       roster notify dispatch "price is \$19/mo"
-            heredoc:         roster notify dispatch --from X <<'EOF'
+            single quotes:   roster notify director 'price is $19/mo'
+            backslash:       roster notify director "price is \$19/mo"
+            heredoc:         roster notify director --from X <<'EOF'
                              anything goes here, $vars and "quotes"
                              EOF
           When relaying user content verbatim, prefer the heredoc form.

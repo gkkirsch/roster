@@ -163,17 +163,17 @@ Three safe patterns:
 
 1. **Single quotes** when the message has no apostrophes:
    ```
-   roster notify dispatch 'the price is $19/mo' --from {{.ID}}
+   roster notify director 'the price is $19/mo' --from {{.ID}}
    ```
 
 2. **Backslash-escape** any `$`, backticks, or `"` inside double quotes:
    ```
-   roster notify dispatch "the price is \$19/mo" --from {{.ID}}
+   roster notify director "the price is \$19/mo" --from {{.ID}}
    ```
 
 3. **Heredoc with single-quoted EOF** for long or mixed content:
    ```
-   roster notify dispatch --from {{.ID}} <<'EOF'
+   roster notify director --from {{.ID}} <<'EOF'
    the price is $19/mo, don't escape anything in here
    EOF
    ```
