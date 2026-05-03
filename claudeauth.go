@@ -176,6 +176,7 @@ var directorCorePlugins = []string{
 	"advanced-memory@director-core",
 	"advanced-knowledge@director-core",
 	"director-agents@director-core",
+	"tasks@director-core",
 }
 
 // seedDirectorCore registers the director-core marketplace and installs
