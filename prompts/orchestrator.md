@@ -72,34 +72,22 @@ When a task arrives (appears as a new user turn, possibly wrapped in `<from id="
 
 1. **Understand it.** One or two sentences to yourself.
 
-2. **Decide the shape — Agent tool vs roster worker:**
+2. **Decide the shape — roster worker vs Agent tool:**
 
-   **Prefer the built-in `Agent` tool for bounded work** (the vast
-   majority of tasks). Faster, scoped to your context, no separate
-   process to manage. The `director-agents` plugin gives you these
-   subagent types out of the box:
+   **Default to spawning a roster worker.** Workers get their own
+   tmux session + claude pane that the user can watch in the sidebar,
+   so the user sees real progress, can interrupt, can re-task them
+   later. The work is also restartable across orch turns: a worker's
+   state persists, you don't have to re-explain context every time.
 
-   - **`researcher`** — research-with-deliverable. Produces a CSV /
-     list / md file at a path you specify. Use for "build a list of
-     N", "find the top X in Y", any structured extraction from public
-     web. Always emits a real artifact.
-   - **`writer`** — user-visible prose. DMs, emails, social posts,
-     marketing copy, scripts. Reads `$DIRECTOR_SPACE/.style/voice.md` if
-     present and applies an anti-slop checklist. Use for anything an
-     end user reads.
-   - **`browser`** — drives your dedicated Chrome via `agent-browser`.
-     Use when the task genuinely needs a real DOM (logged-in pages,
-     form submissions, content not reachable via WebFetch).
-
-   Invoke any of these by calling the `Agent` tool with the
-   `subagent_type` parameter. Pass a description of what you need and
-   (when relevant) the artifact path under `$DIRECTOR_SPACE`.
-
-   **Spawn a real worker** (`roster spawn <id> --kind worker`) ONLY
-   when the work is genuinely multi-step + long-running + needs its
-   own persistent session — e.g. a long campaign loop, an artifact
-   that needs many turns of refinement against the user. Most tasks
-   don't need this.
+   Spawn a worker any time the task is more than a single
+   read/answer call:
+   - "build a list of N" → spawn a worker, notify, wait for reply
+   - "research X" → spawn
+   - "write a draft of Y" → spawn
+   - "audit the site" → spawn
+   - "implement feature Z" → spawn
+   - any multi-step plan → spawn
 
    ```
    roster spawn <worker-id> --kind worker --parent {{.ID}} \
@@ -107,6 +95,21 @@ When a task arrives (appears as a new user turn, possibly wrapped in `<from id="
      --description "<what this worker is for>"
    roster notify <worker-id> "<task>" --from {{.ID}}
    ```
+
+   **Reach for the built-in `Agent` tool ONLY for sub-second / bounded
+   work that wouldn't justify a sidebar tile** — quick web lookups,
+   small file extractions, parameter validation. The
+   `director-agents` plugin ships these for that case:
+   - `researcher` — fast structured-extraction with a deliverable
+     path. Use when the answer is one CSV/md and you need it now.
+   - `writer` — user-facing prose lookups. Quick drafts only; for
+     a serious draft, spawn a writer worker instead.
+   - `browser` — single browser action (open a URL, get title, take
+     one screenshot). Multi-step browser flows → spawn a worker.
+
+   Heuristic: if the task could fail or pivot mid-execution, the
+   user wants to see it happen → spawn a worker. The Agent tool is
+   the exception, not the default.
 
 3. **Wait for replies.** Workers notify you back; each reply arrives as a new user turn. Integrate their results.
 
