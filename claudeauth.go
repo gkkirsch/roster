@@ -12,73 +12,23 @@ import (
 	"time"
 )
 
-// Per-orch CLAUDE_CONFIG_DIR isolation breaks first-launch in two
-// places: the theme picker and the OAuth login picker. We solve both
-// at provision time:
+// Per-orch CLAUDE_CONFIG_DIR isolation breaks first-launch's theme
+// picker and onboarding flow — we seed .claude.json with theme +
+// hasCompletedOnboarding so interactiveHelpers.tsx:111 short-circuits
+// the Onboarding component.
 //
-//  1. Seed .claude.json with theme + hasCompletedOnboarding so
-//     interactiveHelpers.tsx:111 short-circuits the Onboarding
-//     component.
-//
-//  2. Install a `security` shim that strips the per-orch hash from
-//     `Claude Code-credentials-<hex>` so every orch reads/writes the
-//     same canonical keychain entry as the user's ~/.claude. This
-//     keeps refresh-token rotation coordinated across orchs and the
-//     user's main session.
-//
-// See:
-//   - claude-code-internals: utils/secureStorage/macOsKeychainHelpers.ts
-//     (service-name hash derivation)
-//   - claude-code-internals: utils/secureStorage/fallbackStorage.ts
-//     (keychain → plaintext fallback chain — we don't depend on
-//     plaintext, but the shim's correctness rides on the keychain
-//     path being the only one ever used)
-
-//go:embed assets/security
-var securityShim []byte
+// Auth is independent: each orch uses the user's Director OAuth token
+// (set up once via `claude setup-token`, stored in keychain under
+// `Director-OAuth-Token`) propagated as CLAUDE_CODE_OAUTH_TOKEN on
+// every tmux session. claude-code reads the env var directly and
+// never touches the keychain when it's set, so all orchs share one
+// long-lived token with no rotation race.
 
 //go:embed assets/skill-agent-browser.md
 var skillAgentBrowser []byte
 
 //go:embed assets/skill-artifact.md
 var skillArtifact []byte
-
-// installSecurityShim writes the shim into <bin>/security and ALSO
-// symlinks it from ~/.local/bin/security so it lands on the user's
-// regular PATH ahead of /usr/bin/security. tmux set-environment
-// doesn't reliably propagate PATH to new windows (default-shell zsh
-// rebuilds PATH on startup), so the canonical install must already be
-// somewhere zsh's profile leaves on PATH.
-//
-// The shim is selective — it only rewrites service names matching
-// Claude Code's hashed-credentials pattern. Everything else passes
-// through unchanged, so installing globally is safe.
-func installSecurityShim() (string, error) {
-	canonical, err := installSecurityShimCanonical()
-	if err != nil {
-		return "", err
-	}
-	if err := ensureLocalBinSymlink("security", canonical); err != nil {
-		return "", err
-	}
-	return canonical, nil
-}
-
-func installSecurityShimCanonical() (string, error) {
-	dir, err := browserBinDir()
-	if err != nil {
-		return "", err
-	}
-	path := filepath.Join(dir, "security")
-	if existing, err := os.ReadFile(path); err == nil && bytes.Equal(existing, securityShim) {
-		_ = os.Chmod(path, 0o755)
-		return path, nil
-	}
-	if err := os.WriteFile(path, securityShim, 0o755); err != nil {
-		return "", err
-	}
-	return path, nil
-}
 
 // ensureLocalBinSymlink creates ~/.local/bin/<name> → target. Idempotent;
 // refuses to clobber an existing file that isn't already our symlink, so
@@ -300,28 +250,65 @@ func readUserClaudeJSON() map[string]any {
 	return m
 }
 
-// userKeychainHasClaudeCreds is a fail-loud preflight: refuse to spawn
-// an orch if the user hasn't logged in to Claude on this machine, so
-// the failure mode is "log in first" instead of "orch boots and dies
-// silently the first time it tries to call the API."
-func userKeychainHasClaudeCreds() bool {
-	out, err := runRealSecurity("find-generic-password", "-s", "Claude Code-credentials", "-w")
-	if err != nil {
-		return false
+// cmdAuth manages the Director-managed long-lived OAuth token used
+// by every spawned orch. JSON-only output for the UI to consume.
+//
+//   roster auth status                 → {"configured": bool}
+//   roster auth set <token>            → store
+//   roster auth clear                  → remove
+//
+// Subcommand "set" reads the token from stdin if no positional arg is
+// given, so callers don't have to put it on the command line where
+// shell history can capture it.
+func cmdAuth(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: roster auth status|set|clear")
 	}
-	return len(bytes.TrimSpace(out)) > 0
+	switch args[0] {
+	case "status":
+		tok, err := directorOAuthToken()
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{
+			"configured": tok != "",
+		})
+	case "set":
+		var token string
+		if len(args) >= 2 {
+			token = strings.TrimSpace(args[1])
+		} else {
+			b, err := os.ReadFile("/dev/stdin")
+			if err != nil {
+				return fmt.Errorf("read stdin: %w", err)
+			}
+			token = strings.TrimSpace(string(b))
+		}
+		if !strings.HasPrefix(token, "sk-ant-oat") {
+			return fmt.Errorf("token doesn't look like a setup-token (expected to start with 'sk-ant-oat')")
+		}
+		// add-generic-password -U updates in place if present.
+		cmd := exec.Command("/usr/bin/security", "add-generic-password",
+			"-s", directorOAuthTokenService,
+			"-a", os.Getenv("USER"),
+			"-w", token,
+			"-U")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("write keychain: %v — %s", err, strings.TrimSpace(string(out)))
+		}
+		fmt.Fprintln(os.Stdout, `{"configured": true}`)
+		return nil
+	case "clear":
+		// security exits 44 if not present; treat as success.
+		_ = exec.Command("/usr/bin/security", "delete-generic-password",
+			"-s", directorOAuthTokenService,
+			"-a", os.Getenv("USER")).Run()
+		fmt.Fprintln(os.Stdout, `{"configured": false}`)
+		return nil
+	}
+	return fmt.Errorf("unknown auth subcommand %q (want status|set|clear)", args[0])
 }
 
-// runRealSecurity invokes /usr/bin/security directly so we never
-// recurse through the shim regardless of PATH ordering.
-func runRealSecurity(args ...string) ([]byte, error) {
-	cmd := exec.Command("/usr/bin/security", args...)
-	var out bytes.Buffer
-	var errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("security %v: %w (stderr: %s)", args, err, errb.String())
-	}
-	return out.Bytes(), nil
-}

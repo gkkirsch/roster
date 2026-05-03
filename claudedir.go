@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -212,59 +210,41 @@ func splitPluginKey(key string) (string, string) {
 	return key[:i], key[i+1:]
 }
 
-// mirrorClaudeCredsToOrch copies the canonical "Claude Code-credentials"
-// keychain entry into the per-orch suffixed entry that Claude Code
-// looks up directly. claude-code computes the suffix as the first 8
-// chars of sha256(CLAUDE_CONFIG_DIR), reading via Keychain Services
-// (not the `security` CLI), which is why the existing PATH shim
-// doesn't help.
-//
-// Idempotent: -U on add-generic-password updates in place. Skips
-// silently if the canonical entry doesn't exist — the early check in
-// prepareClaudeIsolation already errors loudly on that case.
-func mirrorClaudeCredsToOrch(claudeDir string) error {
-	canonical, err := runRealSecurity("find-generic-password",
-		"-s", "Claude Code-credentials",
+// directorOAuthTokenService is the macOS keychain service name where
+// Director stores its single long-lived OAuth token (created by the
+// user via `claude setup-token`). The token is shared across every
+// orch via the CLAUDE_CODE_OAUTH_TOKEN env var.
+const directorOAuthTokenService = "Director-OAuth-Token"
+
+// directorOAuthToken returns the user's Director-managed setup-token
+// from keychain, or "" if none has been configured. Errors only on
+// system-level failures (security CLI missing, keychain locked); a
+// missing entry is not an error.
+func directorOAuthToken() (string, error) {
+	cmd := exec.Command("/usr/bin/security", "find-generic-password",
+		"-s", directorOAuthTokenService,
 		"-a", os.Getenv("USER"),
 		"-w")
+	out, err := cmd.Output()
 	if err != nil {
-		return nil
+		// security exits 44 when the entry simply doesn't exist —
+		// not an error from our perspective.
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 44 {
+			return "", nil
+		}
+		return "", fmt.Errorf("read keychain %s: %w", directorOAuthTokenService, err)
 	}
-	value := strings.TrimRight(string(canonical), "\n")
-	if value == "" {
-		return nil
-	}
-	suffix := claudeConfigDirHash(claudeDir)
-	service := "Claude Code-credentials-" + suffix
-	cmd := exec.Command("/usr/bin/security", "add-generic-password",
-		"-s", service,
-		"-a", os.Getenv("USER"),
-		"-w", value,
-		"-U")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("add-generic-password %s: %v — %s", service, err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}
-
-// claudeConfigDirHash mirrors how claude-code derives the keychain
-// service suffix when CLAUDE_CONFIG_DIR is set: sha256[:8] of the dir.
-func claudeConfigDirHash(dir string) string {
-	sum := sha256.Sum256([]byte(dir))
-	return hex.EncodeToString(sum[:])[:8]
+	return strings.TrimRight(string(out), "\n"), nil
 }
 
 // keychainGet reads one fleetview-managed credential from the user's
 // macOS keychain. Returns (value, true) on hit, ("", false) on miss.
 func keychainGet(agentID, pluginName, marketplace, key string) (string, bool) {
-	// Use the *real* security binary, not the shim — the shim rewrites
-	// to "Claude Code-credentials" which would clash with the per-agent
-	// service we use for plugin creds.
-	out, err := runRealSecurity("find-generic-password",
+	cmd := exec.Command("/usr/bin/security", "find-generic-password",
 		"-s", "fleetview-"+agentID,
 		"-a", fmt.Sprintf("%s@%s/%s", pluginName, marketplace, key),
 		"-w")
+	out, err := cmd.Output()
 	if err != nil {
 		return "", false
 	}
@@ -280,12 +260,19 @@ func setTmuxSessionEnv(session, key, value string) error {
 }
 
 // prepareClaudeIsolation does the full dance for one agent: resolve
-// effective claude dir, create the tmux session if needed, set
-// CLAUDE_CONFIG_DIR on it, seed onboarding state, and PATH-prepend
-// the security shim so per-orch keychain ops land on the user's
-// canonical entry. Returns the dir that will be used (empty means
-// no override was applied). Safe to call even when the agent
-// doesn't need isolation.
+// effective claude dir, create the tmux session, set CLAUDE_CONFIG_DIR
+// + CLAUDE_CODE_OAUTH_TOKEN on it, seed onboarding state, and inject
+// plugin creds. Returns the dir that will be used (empty means no
+// override was applied).
+//
+// Auth model: every orch reads from the same Director-managed
+// long-lived OAuth token (set up once via `claude setup-token` and
+// stored in keychain). We propagate it as the CLAUDE_CODE_OAUTH_TOKEN
+// env var on the tmux session, which claude-code reads directly —
+// no per-orch keychain entry, no rotating-refresh-token race. The
+// per-orch `Claude Code-credentials-<hash>` keychain entries that
+// earlier versions of Director maintained are no longer used; they're
+// left in place as orphans (harmless, removed on next OS reauth).
 func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) {
 	dir, err := claudeDirFor(kind, id, parentID)
 	if err != nil {
@@ -294,11 +281,16 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	if dir == "" {
 		return "", nil
 	}
-	// Fail loud if the user hasn't logged in to Claude on this
-	// machine yet — otherwise the orch would boot, then crash on
-	// first API call. Better error: "log in first."
-	if !userKeychainHasClaudeCreds() {
-		return "", fmt.Errorf("no Claude credentials found in keychain; log in with `claude` once first")
+	// Fail loud if Director's OAuth token isn't configured yet — the
+	// orch would otherwise boot and crash on first API call. The
+	// setup page surfaces this and walks the user through
+	// `claude setup-token`.
+	token, err := directorOAuthToken()
+	if err != nil {
+		return "", err
+	}
+	if token == "" {
+		return "", fmt.Errorf("Director auth token not configured; run `claude setup-token` and paste the result into the Director setup page")
 	}
 	switch kind {
 	case "orchestrator":
@@ -309,10 +301,6 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 		if err := seedDispatcherClaudeDir(dir); err != nil {
 			return "", fmt.Errorf("seed dispatcher claude dir: %w", err)
 		}
-	}
-	shim, err := installSecurityShim()
-	if err != nil {
-		return "", fmt.Errorf("install security shim: %w", err)
 	}
 	// Per-orch space: <data>/<orch-id>/ (workers inherit their parent's).
 	// mkdir before creating the tmux session so amux's -c flag can land.
@@ -326,15 +314,13 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	if err := setTmuxSessionEnv(session, "CLAUDE_CONFIG_DIR", dir); err != nil {
 		return "", err
 	}
+	if err := setTmuxSessionEnv(session, "CLAUDE_CODE_OAUTH_TOKEN", token); err != nil {
+		return "", err
+	}
 	// Also set DIRECTOR_SPACE on the session env so prompts and skills
 	// can reference "$DIRECTOR_SPACE" symbolically without hardcoding
 	// the path.
 	if err := setTmuxSessionEnv(session, "DIRECTOR_SPACE", space); err != nil {
-		return "", err
-	}
-	shimDir := filepath.Dir(shim)
-	pathVal := shimDir + ":" + os.Getenv("PATH")
-	if err := setTmuxSessionEnv(session, "PATH", pathVal); err != nil {
 		return "", err
 	}
 	// Inject any plugin-declared credentials into the session as env
@@ -343,16 +329,6 @@ func prepareClaudeIsolation(kind, id, parentID, session string) (string, error) 
 	// set" path and tell the user to configure it.
 	if err := injectPluginCreds(dir, id, session); err != nil {
 		fmt.Fprintf(os.Stderr, "roster: plugin creds: %v\n", err)
-	}
-	// Mirror the user's canonical Claude OAuth tokens into the per-orch
-	// suffixed keychain entry that Claude Code itself looks at. The
-	// shell shim (PATH-prepended) can only redirect subprocess calls;
-	// claude-code reads keychain directly via the macOS Keychain
-	// Services API, which the shim doesn't intercept. Without this
-	// mirror, every fresh orch boots into a "Not logged in" state even
-	// though the user is signed in globally.
-	if err := mirrorClaudeCredsToOrch(dir); err != nil {
-		fmt.Fprintf(os.Stderr, "roster: mirror claude creds: %v\n", err)
 	}
 	return dir, nil
 }
