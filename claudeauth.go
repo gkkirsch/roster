@@ -103,15 +103,48 @@ func seedOrchClaudeDir(orchDir string) error {
 }
 
 // seedDispatcherClaudeDir is a stripped-down version of
-// seedOrchClaudeDir for dispatchers: onboarding bypass yes, plugins
-// no, agent-browser/artifact skills no. The dispatcher is a router,
-// not a worker — it should have no skills/plugins of its own so the
-// global ~/.claude inventory doesn't bleed into its prompt.
+// seedOrchClaudeDir for dispatchers: onboarding bypass yes,
+// agent-browser/artifact skills no. The dispatcher is a router, not
+// a worker — it should have no domain skills of its own.
+//
+// The tasks plugin IS installed though: the dispatcher maintains its
+// own task list (visible in the UI's Tasks panel) for the user to
+// jot todo items against the dispatcher itself. Other director-core
+// plugins stay out of the dispatcher's prompt to keep its tool
+// surface minimal.
 func seedDispatcherClaudeDir(dir string) error {
 	if err := seedClaudeJSON(dir); err != nil {
 		return err
 	}
-	return seedSettingsJSON(dir)
+	if err := seedSettingsJSON(dir); err != nil {
+		return err
+	}
+	seedDispatcherPlugins(dir)
+	return nil
+}
+
+// seedDispatcherPlugins installs only the tasks plugin into the
+// dispatcher's CLAUDE_CONFIG_DIR. We split this from seedDirectorCore
+// (which installs the orch's full plugin set) so the dispatcher
+// stays minimal — the orch needs advanced-knowledge / advanced-memory
+// / director-agents to do work; the dispatcher does not.
+func seedDispatcherPlugins(dir string) {
+	env := append(os.Environ(), "CLAUDE_CONFIG_DIR="+dir)
+
+	add := exec.Command("claude", "plugin", "marketplace", "add", directorCoreMarketplaceURL)
+	add.Env = env
+	if out, err := add.CombinedOutput(); err != nil {
+		if !bytes.Contains(out, []byte("already")) {
+			fmt.Fprintf(os.Stderr, "roster: dispatcher director-core add: %v — %s\n", err, strings.TrimSpace(string(out)))
+		}
+	}
+	install := exec.Command("claude", "plugin", "install", "tasks@director-core")
+	install.Env = env
+	if out, err := install.CombinedOutput(); err != nil {
+		if !bytes.Contains(out, []byte("already")) {
+			fmt.Fprintf(os.Stderr, "roster: dispatcher tasks install: %v — %s\n", err, strings.TrimSpace(string(out)))
+		}
+	}
 }
 
 // directorCoreMarketplaceURL is the public marketplace.json that ships
