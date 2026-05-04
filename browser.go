@@ -433,6 +433,13 @@ func launchChrome(orchID string) (port int, profile string, err error) {
 		"--no-first-run",
 		"--no-default-browser-check",
 		"--window-size=1280,800",
+		// Force DPR=1 so screenshots are reasonable bytes on retina
+		// machines. agent-browser's `screenshot` reads at the
+		// browser's native devicePixelRatio; without this flag a
+		// MacBook Pro emits 2x captures that routinely blow past
+		// model image-input limits and slow the orch's loop. See
+		// vercel-labs/agent-browser#304.
+		"--force-device-scale-factor=1",
 		"about:blank",
 	)
 	cmd.Stdout = nil
