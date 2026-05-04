@@ -7,7 +7,6 @@ import (
 	"io"
 	"os/exec"
 	"strings"
-	"time"
 )
 
 // camuxBin — overridable via CAMUX_BIN env.
@@ -86,17 +85,39 @@ func camuxInfo(target string) (*camuxInfoOut, error) {
 	return &v, nil
 }
 
-// waitForReady polls camux status until ready or timeout.
-func waitForReady(target string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		switch camuxStatus(target) {
-		case "ready":
-			return nil
-		case "not-found", "dead":
-			return fmt.Errorf("target %s is %s", target, camuxStatus(target))
-		}
-		time.Sleep(300 * time.Millisecond)
+// preflightNotify checks whether the target's TUI can accept input
+// right now. claude-code's TUI buffers and queues whatever you type
+// while the agent is streaming, so we deliberately DO NOT block on
+// "streaming" — we paste, claude queues, the input lands on the next
+// turn. That mirrors how a human user types into the chat box mid-run.
+//
+// We only hard-fail on states where input would be silently lost or
+// consumed by something other than the conversation:
+//
+//   dead / not-found     — there's no TUI to type into
+//   stopped              — caller needs to `roster resume` first
+//   permission-dialog    — typed text would answer the dialog
+//   trust-dialog         — same; would answer the trust prompt
+//
+// Anything else (ready, streaming, or any unfamiliar state we don't
+// have an opinion on) is allowed through. Better to attempt and let
+// claude buffer than to block on a state-string we haven't enumerated.
+//
+// The previous waitForReady gate polled until "ready" with a 30s
+// timeout. That gate was the source of duplicate-message bugs:
+// concurrent `roster notify` invocations would each independently
+// wait, then all fire once the worker finally became ready. Removing
+// the ready-gate (and instead leaning on claude's own input queue)
+// means there's nothing to "wait for" in parallel.
+func preflightNotify(target string) error {
+	st := camuxStatus(target)
+	switch st {
+	case "dead", "not-found":
+		return fmt.Errorf("target %s is %s", target, st)
+	case "stopped":
+		return fmt.Errorf("target %s is stopped — run `roster resume` first", target)
+	case "permission-dialog", "trust-dialog":
+		return fmt.Errorf("target %s is on a %s — clear it (camux interrupt) before sending", target, st)
 	}
-	return fmt.Errorf("waitForReady: timed out after %s on %s", timeout, target)
+	return nil
 }

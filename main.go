@@ -36,9 +36,11 @@ Visibility:
 
 Collaboration:
   update  <id> [--description "..."] | [--append "..."]
-  notify  <to-id> "<message>" [--from <id>] [--wait-ready 30s]
-          Wait until recipient's TUI is ready, paste the message, submit.
-          Appears in their Claude conversation as a new user turn.
+  notify  <to-id> "<message>" [--from <id>]
+          Paste the message into the recipient's claude TUI and submit.
+          Appears in their Claude conversation as a new user turn. Works
+          mid-stream too — claude's TUI buffers and queues input until the
+          current turn finishes.
 
           SHELL ESCAPING — read this. The message is a Bash arg, so Bash
           expands $vars, backticks, etc. BEFORE roster sees them. Common

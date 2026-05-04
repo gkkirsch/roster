@@ -510,17 +510,16 @@ func cmdForget(args []string) error {
 // --- notify -----------------------------------------------------------------
 
 func cmdNotify(args []string) error {
-	usage := "usage: roster notify <to-id> \"<message>\" [--from <id>] [--wait-ready 30s]\n" +
+	usage := "usage: roster notify <to-id> \"<message>\" [--from <id>]\n" +
 		"  Bash expands $vars and backticks BEFORE roster sees the message —\n" +
 		"  '$19/mo' becomes '9/mo'. Use single quotes 'price is $19', backslash\n" +
 		"  \"\\$19\", or a heredoc <<'EOF'…EOF when the message has special chars."
 	// Pull <to-id> and <message> out as the first two non-flag args so users
-	// can write `notify --from X --wait-ready 5s <to> "<msg>"` OR
-	// `notify <to> "<msg>" --from X --wait-ready 5s`. Go's flag.Parse stops
-	// at the first non-flag, which would force one ordering otherwise.
+	// can write `notify --from X <to> "<msg>"` OR `notify <to> "<msg>" --from X`.
+	// Go's flag.Parse stops at the first non-flag, which would force one
+	// ordering otherwise.
 	flagsWithValue := map[string]bool{
 		"--from": true, "-from": true,
-		"--wait-ready": true, "-wait-ready": true,
 	}
 	var positional []string
 	var passthrough []string
@@ -566,7 +565,6 @@ func cmdNotify(args []string) error {
 	fs := flag.NewFlagSet("notify", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	from := fs.String("from", "", "id of the sender (optional; prepended to the delivered message)")
-	waitReady := fs.Duration("wait-ready", 30*time.Second, "how long to wait for recipient to be ready")
 	if err := fs.Parse(passthrough); err != nil {
 		return err
 	}
@@ -577,8 +575,8 @@ func cmdNotify(args []string) error {
 	if a.Target == "" {
 		return fmt.Errorf("notify: %s has no target (stopped). Run `roster resume %s` first.", to, to)
 	}
-	if err := waitForReady(a.Target, *waitReady); err != nil {
-		return fmt.Errorf("notify: recipient %s not ready: %w", to, err)
+	if err := preflightNotify(a.Target); err != nil {
+		return fmt.Errorf("notify: %w", err)
 	}
 	// Format the delivered message. When the sender is a registered
 	// roster agent, wrap it in a <from id="..."> envelope. Two reasons:
@@ -600,9 +598,11 @@ func cmdNotify(args []string) error {
 		}
 		delivered = fmt.Sprintf("<from id=\"%s\">\n%s%s\n</from>", *from, msg, footer)
 	}
-	// Paste + submit directly via amux — camux `ask` would block waiting
+	// Paste + submit directly via amux. camux `ask` would block waiting
 	// for a reply, which isn't what notify semantics imply (fire-and-forget
-	// arrival). We've already waited for ready via waitForReady above.
+	// arrival). claude's TUI buffers input even mid-stream, so this lands
+	// either as the current turn (if the agent was at the prompt) or
+	// queued for the next turn (if the agent was streaming).
 	cmd := exec.Command(amuxBin, "paste", a.Target, "--submit")
 	cmd.Stdin = bytes.NewReader([]byte(delivered))
 	var errb bytes.Buffer
