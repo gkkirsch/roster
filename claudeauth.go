@@ -160,6 +160,7 @@ var directorCorePlugins = []string{
 	"advanced-knowledge@director-core",
 	"director-agents@director-core",
 	"tasks@director-core",
+	"dogfood@director-core",
 }
 
 // seedDirectorCore registers the director-core marketplace and installs
