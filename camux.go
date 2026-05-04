@@ -5,13 +5,62 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
-// camuxBin — overridable via CAMUX_BIN env.
+// camuxBin / amuxBin — the satellite binaries roster delegates to.
+// Resolution order (in resolveSiblingBins, called from main):
+//
+//  1. $CAMUX_BIN / $AMUX_BIN if set (explicit override, wins everything).
+//  2. The binary sitting next to this `roster` binary on disk. We
+//     bundle camux + amux + roster together (in Director.app, in the
+//     release tarball, in any sane local install) so when they ship
+//     together they should behave together. PATH order on the user's
+//     machine should not be able to wedge in a different one.
+//  3. PATH lookup, as a last resort.
+//
+// Background: a friend's install hit the runaway-tmux bug because an
+// unrelated `amux` on his PATH was getting picked up ahead of our
+// bundled one. The bundled amux talks to tmux statelessly via RPC;
+// the wrong amux had different semantics and `amux exists` always
+// returned false, causing camux to think the spawned window had
+// vanished and triggering a retry storm.
 var camuxBin = "camux"
 var amuxBin = "amux"
+
+// resolveSiblingBins runs the disk-sibling lookup before we honor
+// the env overrides. Called once from main().
+func resolveSiblingBins() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	real, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return
+	}
+	dir := filepath.Dir(real)
+	for _, p := range []struct {
+		name string
+		dst  *string
+	}{
+		{"camux", &camuxBin},
+		{"amux", &amuxBin},
+	} {
+		sib := filepath.Join(dir, p.name)
+		fi, err := os.Stat(sib)
+		if err != nil || fi.IsDir() {
+			continue
+		}
+		if fi.Mode()&0o111 == 0 {
+			continue
+		}
+		*p.dst = sib
+	}
+}
 
 func runCamux(args ...string) (string, error) {
 	return runCamuxStdin(nil, args...)

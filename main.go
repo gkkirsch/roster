@@ -77,6 +77,7 @@ Environment:
 `
 
 func main() {
+	resolveSiblingBins()
 	if v := os.Getenv("CAMUX_BIN"); v != "" {
 		camuxBin = v
 	}
