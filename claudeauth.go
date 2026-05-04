@@ -184,7 +184,14 @@ func seedClaudeJSON(orchDir string) error {
 	if b, err := os.ReadFile(target); err == nil {
 		_ = json.Unmarshal(b, &existing)
 	}
-	if existing["theme"] != nil && existing["hasCompletedOnboarding"] == true && existing["oauthAccount"] != nil {
+
+	home, _ := os.UserHomeDir()
+	homeTrusted := isHomeTrusted(existing, home)
+
+	if existing["theme"] != nil &&
+		existing["hasCompletedOnboarding"] == true &&
+		existing["oauthAccount"] != nil &&
+		homeTrusted {
 		return nil
 	}
 
@@ -208,11 +215,56 @@ func seedClaudeJSON(orchDir string) error {
 		}
 	}
 
+	// Pre-accept the workspace-trust dialog for the user's home dir.
+	// claude-code's trust check walks UP from cwd through every parent
+	// looking for a trusted ancestor, so a single HOME entry covers the
+	// dispatcher's cwd + every orch space + every worker space, present
+	// and future. Without this, every spawned claude stalls on the
+	// "Do you trust this folder?" prompt forever (— the
+	// --dangerously-skip-permissions flag only relaxes tool-execution
+	// permissions, not workspace trust). When that happens, roster's
+	// "wait for ready" times out and the caller retries the spawn,
+	// leaving an orphan tmux session per attempt — that's the
+	// "100s of tmux panes on first launch" report.
+	if home != "" {
+		projects, _ := existing["projects"].(map[string]any)
+		if projects == nil {
+			projects = map[string]any{}
+			existing["projects"] = projects
+		}
+		homeProj, _ := projects[home].(map[string]any)
+		if homeProj == nil {
+			homeProj = map[string]any{}
+			projects[home] = homeProj
+		}
+		homeProj["hasTrustDialogAccepted"] = true
+	}
+
 	out, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(target, out, 0o600)
+}
+
+// isHomeTrusted reports whether the existing .claude.json already
+// has hasTrustDialogAccepted=true for the user's home directory.
+// Used as part of the seed idempotency check so we don't rewrite
+// .claude.json on every spawn after the first.
+func isHomeTrusted(existing map[string]any, home string) bool {
+	if home == "" {
+		return false
+	}
+	projects, ok := existing["projects"].(map[string]any)
+	if !ok {
+		return false
+	}
+	proj, ok := projects[home].(map[string]any)
+	if !ok {
+		return false
+	}
+	v, _ := proj["hasTrustDialogAccepted"].(bool)
+	return v
 }
 
 func seedSettingsJSON(orchDir string) error {
