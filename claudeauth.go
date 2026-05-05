@@ -307,15 +307,50 @@ func seedSettingsJSON(orchDir string) error {
 	if b, err := os.ReadFile(target); err == nil {
 		_ = json.Unmarshal(b, &existing)
 	}
-	if existing["skipDangerousModePermissionPrompt"] == true {
+
+	changed := false
+	if existing["skipDangerousModePermissionPrompt"] != true {
+		existing["skipDangerousModePermissionPrompt"] = true
+		changed = true
+	}
+
+	// Block AskUserQuestion at the tool layer. The orch/worker prompt
+	// also bans it explicitly, but a permissions.deny entry is the
+	// belt-and-suspenders: even if the model tries to call it, claude
+	// rejects the call. AskUserQuestion drains the user's attention
+	// over recoverable details — see the "bias toward action" section
+	// in the orch prompt for the framing. The pattern we want is:
+	// pick a sensible default, log the choice, keep moving.
+	if ensureDeny(existing, "AskUserQuestion") {
+		changed = true
+	}
+
+	if !changed {
 		return nil
 	}
-	existing["skipDangerousModePermissionPrompt"] = true
 	out, err := json.MarshalIndent(existing, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(target, out, 0o644)
+}
+
+// ensureDeny adds a tool name to settings.permissions.deny[] if not
+// already present. Returns true if it changed anything.
+func ensureDeny(existing map[string]any, rule string) bool {
+	perms, ok := existing["permissions"].(map[string]any)
+	if !ok {
+		perms = map[string]any{}
+		existing["permissions"] = perms
+	}
+	rawDeny, _ := perms["deny"].([]any)
+	for _, v := range rawDeny {
+		if s, ok := v.(string); ok && s == rule {
+			return false
+		}
+	}
+	perms["deny"] = append(rawDeny, rule)
+	return true
 }
 
 // readUserClaudeJSON loads ~/.claude/.claude.json best-effort.

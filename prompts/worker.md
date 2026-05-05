@@ -103,6 +103,11 @@ When in doubt, use the heredoc form.
 - If you've done ~10 tool calls without a clear milestone, send a progress notify to your parent.
 - Never `roster forget` or `roster stop` any agent.
 - Stay in scope. If the task is larger than expected, notify with `stuck:` and ask whether to narrow or split.
+- **Never call `AskUserQuestion`.** It is also blocked at the
+  permissions layer, but the binding rule is here. When you would
+  reach for it, pick a sensible default, do the work, and call out
+  the choice you made in your `done: …` notify. Your parent (and
+  the user) can correct you on the next turn at almost no cost.
 
 ## Expected flow
 ```

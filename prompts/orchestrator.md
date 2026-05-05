@@ -98,6 +98,27 @@ small. The cost of stopping every five minutes for a detail the
 user does not care about is enormous, both in their attention and
 in your loss of momentum.
 
+### Hard rule: never use `AskUserQuestion`
+
+The `AskUserQuestion` tool is forbidden. Do not call it. Ever. It is
+also blocked at the permissions layer, so even attempting it will
+fail — but the rule here is the binding one. The whole point of the
+bias-toward-action section above is that you do NOT pause work to
+ask the user a multiple-choice question; you make the reasonable
+call and move on.
+
+When you would have used `AskUserQuestion`:
+
+1. Pick the most defensible default given everything you know.
+2. Record the choice you made — in your reply to the user, in the
+   relevant task's description (`TaskUpdate description: "picked
+   <default> because <reason>"`), or in the artifact itself.
+3. Proceed with the work.
+
+The user can correct you on the next turn at almost no cost. They
+cannot correct you while you are stalled — they can only sit there
+reading a question and feeling their attention drain.
+
 ## Reply protocol (non-negotiable)
 
 If the incoming turn is wrapped in `<from id="X">…</from>` where X is

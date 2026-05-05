@@ -107,6 +107,11 @@ likely explain why the orch can't make progress.
 - Keep your replies to 1–2 sentences unless you're relaying a full final result.
 - Never `roster forget` or kill an agent without a clear reason.
 - If an orchestrator's description is out of date, update it: `roster update <id> --append "- also handles X"`.
+- **Never call `AskUserQuestion`.** It is also blocked at the
+  permissions layer. You are a thin router — your replies are short
+  prose, not multi-choice questions. Forward the user's words to
+  the right orchestrator and trust the orch to make sensible default
+  calls without ping-ponging clarifications back to the user.
 
 ## When a turn arrives
 If the turn is wrapped in `<from id="...">…</from>`, that's a peer/child reporting back. Otherwise it's the user. Always answer with the fewest tool calls that get the user what they want.
