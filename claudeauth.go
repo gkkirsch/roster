@@ -133,6 +133,7 @@ func seedDispatcherPlugins(dir string) {
 
 	add := exec.Command("claude", "plugin", "marketplace", "add", directorCoreMarketplaceURL)
 	add.Env = env
+	add.Dir = dir
 	if out, err := add.CombinedOutput(); err != nil {
 		if !bytes.Contains(out, []byte("already")) {
 			fmt.Fprintf(os.Stderr, "roster: dispatcher director-core add: %v — %s\n", err, strings.TrimSpace(string(out)))
@@ -140,6 +141,7 @@ func seedDispatcherPlugins(dir string) {
 	}
 	install := exec.Command("claude", "plugin", "install", "tasks@director-core")
 	install.Env = env
+	install.Dir = dir
 	if out, err := install.CombinedOutput(); err != nil {
 		if !bytes.Contains(out, []byte("already")) {
 			fmt.Fprintf(os.Stderr, "roster: dispatcher tasks install: %v — %s\n", err, strings.TrimSpace(string(out)))
@@ -172,6 +174,7 @@ func seedDirectorCore(orchDir string) {
 
 	add := exec.Command("claude", "plugin", "marketplace", "add", directorCoreMarketplaceURL)
 	add.Env = env
+	add.Dir = orchDir
 	if out, err := add.CombinedOutput(); err != nil {
 		// "already exists" is the expected path on every spawn after
 		// the first — don't spam stderr with it.
@@ -190,6 +193,7 @@ func seedDirectorCore(orchDir string) {
 		}
 		install := exec.Command("claude", "plugin", "install", spec)
 		install.Env = env
+		install.Dir = orchDir
 		out, err := install.CombinedOutput()
 		if err != nil && !bytes.Contains(out, []byte("already")) {
 			fmt.Fprintf(os.Stderr, "roster: director-core install %s: %v — %s\n", spec, err, strings.TrimSpace(string(out)))
