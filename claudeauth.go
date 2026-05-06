@@ -139,6 +139,18 @@ func seedDispatcherPlugins(dir string) {
 			fmt.Fprintf(os.Stderr, "roster: dispatcher director-core add: %v — %s\n", err, strings.TrimSpace(string(out)))
 		}
 	}
+	// `add` is idempotent and a no-op when the marketplace was added
+	// before — it does NOT refresh the local cached marketplace.json.
+	// So if upstream added a plugin since the user's cache was first
+	// downloaded, `install <newplugin>@director-core` would fail with
+	// "plugin not found, your local copy may be out of date." Force
+	// an update on every spawn so the cache always reflects upstream.
+	update := exec.Command("claude", "plugin", "marketplace", "update", "director-core")
+	update.Env = env
+	update.Dir = dir
+	if out, err := update.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "roster: dispatcher director-core update: %v — %s\n", err, strings.TrimSpace(string(out)))
+	}
 	install := exec.Command("claude", "plugin", "install", "tasks@director-core")
 	install.Env = env
 	install.Dir = dir
@@ -181,6 +193,16 @@ func seedDirectorCore(orchDir string) {
 		if !bytes.Contains(out, []byte("already")) {
 			fmt.Fprintf(os.Stderr, "roster: director-core add: %v — %s\n", err, strings.TrimSpace(string(out)))
 		}
+	}
+	// Force-refresh the cache so installs against newly-added plugins
+	// (e.g. tasks@director-core, dogfood@director-core) work even when
+	// the user's marketplace was first cached before they shipped. See
+	// the matching block in seedDispatcherPlugins for the rationale.
+	update := exec.Command("claude", "plugin", "marketplace", "update", "director-core")
+	update.Env = env
+	update.Dir = orchDir
+	if out, err := update.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "roster: director-core update: %v — %s\n", err, strings.TrimSpace(string(out)))
 	}
 	for i, spec := range directorCorePlugins {
 		// Brief gap between installs — claude plugin install creates
