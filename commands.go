@@ -424,6 +424,37 @@ func cmdSearch(args []string) error {
 	return nil
 }
 
+// migrateLegacySystemPromptArgs rewrites `--system-prompt <inline>`
+// pairs in saved SpawnArgs to `--system-prompt-file <path>` by
+// writing the inline content to a stable file via writeSpawnPrompt.
+// Idempotent: no-op when the args already use --system-prompt-file.
+// On any write error, returns the args unchanged + rewrote=false so
+// the caller falls back to the original (still-broken-but-safe)
+// path. We swallow the error rather than failing the whole resume
+// because (a) writeSpawnPrompt failures are rare and (b) the worst
+// outcome of the fallback is the same legacy crash the user already
+// has — we don't want to make resume LESS likely to succeed.
+func migrateLegacySystemPromptArgs(id string, args []string) ([]string, bool) {
+	out := make([]string, 0, len(args))
+	rewrote := false
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--system-prompt" && i+1 < len(args) {
+			path, err := writeSpawnPrompt(id, args[i+1])
+			if err != nil {
+				// Bail on rewrite, keep the rest of args untouched.
+				out = append(out, args[i:]...)
+				return out, false
+			}
+			out = append(out, "--system-prompt-file", path)
+			i++ // skip the inline content
+			rewrote = true
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out, rewrote
+}
+
 // --- resume -----------------------------------------------------------------
 
 func cmdResume(args []string) error {
@@ -447,6 +478,20 @@ func cmdResume(args []string) error {
 	if _, err := prepareBrowserIsolation(a.Kind, a.ID, a.Parent, session); err != nil {
 		return fmt.Errorf("resume: browser env: %w", err)
 	}
+
+	// Migrate legacy --system-prompt <inline> args to
+	// --system-prompt-file <path>. Agents saved before the prompt-file
+	// fix have giant inline prompts in their SpawnArgs; passing those
+	// through tmux + shell mangles them and claude crashes on launch
+	// (see commit history for the full story). Rewrite once, persist
+	// to the registry, and every subsequent resume uses the safe form.
+	if migrated, rewrote := migrateLegacySystemPromptArgs(a.ID, a.SpawnArgs); rewrote {
+		a.SpawnArgs = migrated
+		if err := saveAgent(a); err != nil {
+			return fmt.Errorf("resume: persist migrated spawn args: %w", err)
+		}
+	}
+
 	flags := append([]string{}, a.SpawnArgs...)
 	if a.SessionUUID != "" {
 		flags = append(flags, "--resume", a.SessionUUID)
