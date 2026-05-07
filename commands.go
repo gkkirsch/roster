@@ -587,8 +587,27 @@ func cmdNotify(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// Self-heal: if the agent's tmux session is gone (not-found / dead)
+	// or it never had a target (stopped), resume from the saved spawn
+	// args before trying to deliver. The dispatcher routinely shells
+	// `roster notify <orch>` for orchs that may have been reaped after
+	// a reboot or claude exit; auto-resume turns this from a hard error
+	// into a transparent recovery. director-server's HTTP /notify has
+	// the same self-heal — both paths now behave consistently.
+	resumable := func(s string) bool { return s == "not-found" || s == "dead" || s == "stopped" }
+	if a.Target == "" || resumable(camuxStatus(a.Target)) {
+		fmt.Fprintf(os.Stderr, "roster: notify: %s is offline — auto-resuming\n", to)
+		if err := cmdResume([]string{to}); err != nil {
+			return fmt.Errorf("notify: auto-resume of %s failed: %w", to, err)
+		}
+		a, err = loadAgent(to)
+		if err != nil {
+			return err
+		}
+	}
 	if a.Target == "" {
-		return fmt.Errorf("notify: %s has no target (stopped). Run `roster resume %s` first.", to, to)
+		return fmt.Errorf("notify: %s has no target after resume (saved spawn args missing?)", to)
 	}
 	if err := preflightNotify(a.Target); err != nil {
 		return fmt.Errorf("notify: %w", err)
