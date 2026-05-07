@@ -82,6 +82,31 @@ func storeDir() (string, error) {
 	return rosterPath("ROSTER_DIR", "XDG_DATA_HOME", ".local/share", "agents")
 }
 
+// promptDir is where we persist rendered system prompts so they can
+// be passed to claude via --system-prompt-file. See writeSpawnPrompt.
+func promptDir() (string, error) {
+	return rosterPath("ROSTER_PROMPT_DIR", "XDG_DATA_HOME", ".local/share", "prompts")
+}
+
+// writeSpawnPrompt writes the rendered system prompt for an agent
+// to a stable path keyed by agent id, returning the path. claude's
+// --system-prompt-file reads it directly — bypassing the shell layer
+// that mangles inline --system-prompt args containing $VARS, backticks,
+// and other metacharacters. Idempotent: overwrites any prior prompt
+// for the same id (kind/parent/description may have changed since
+// last spawn).
+func writeSpawnPrompt(id, prompt string) (string, error) {
+	dir, err := promptDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, id+".md")
+	if err := os.WriteFile(path, []byte(prompt), 0o644); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
 func agentPath(id string) (string, error) {
 	dir, err := storeDir()
 	if err != nil {

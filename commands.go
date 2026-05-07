@@ -65,9 +65,24 @@ func cmdSpawn(args []string) error {
 		return fmt.Errorf("spawn: render system prompt: %w", err)
 	}
 
-	// Prepend --system-prompt so any user-provided one later in camuxFlags
-	// wins (claude's CLI: later flag overrides earlier).
-	baseFlags := []string{"--system-prompt", systemPrompt}
+	// Persist the rendered prompt to disk and pass it to claude via
+	// --system-prompt-file rather than the inline --system-prompt. The
+	// inline form gets mangled in transit: tmux's `new-window -- cmd
+	// args` runs the command through the user's default shell, which
+	// expands `$VARS`, backticks, and other metacharacters in the
+	// prompt content. Our prompts are markdown that intentionally
+	// contains shell-escaping examples ("the price is $19/mo"), so
+	// inline passing produced corrupted prompts inside claude. Path
+	// passing avoids the shell entirely — claude reads the file
+	// directly via system calls.
+	promptPath, err := writeSpawnPrompt(id, systemPrompt)
+	if err != nil {
+		return fmt.Errorf("spawn: write system-prompt file: %w", err)
+	}
+
+	// Prepend --system-prompt-file so any user-provided one later in
+	// camuxFlags wins (claude's CLI: later flag overrides earlier).
+	baseFlags := []string{"--system-prompt-file", promptPath}
 	// Dispatchers run on the latest Sonnet — fast routing, the
 	// orchestrators it spawns can use whatever model they need.
 	if *kind == "dispatcher" {
