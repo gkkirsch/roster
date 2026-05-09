@@ -176,8 +176,8 @@ When a task arrives (appears as a new user turn, possibly wrapped in `<from id="
      task's domain. Even a partial match is usually a win — the
      worker has built up context across turns that a fresh one
      would have to rediscover. Just `roster notify <id>` it.
-   - **Resume a stopped worker** when one matches but is in
-     `stopped` state: `roster resume <id>` then `roster notify <id>`.
+   - **Bring a stopped worker back** when one matches but is in
+     `stopped` state: `roster ensure <id>` then `roster notify <id>`.
    - **Spawn a new worker** only when no existing worker plausibly
      fits, or when the new task is genuinely orthogonal to all of
      them (e.g. you have an `impl-auth` worker and the new task is
@@ -217,8 +217,8 @@ When a task arrives (appears as a new user turn, possibly wrapped in `<from id="
    # Reuse (if existing worker fits — much more common):
    roster notify <existing-worker-id> "<task>" --from {{.ID}}
 
-   # Resume (if existing worker matches but is stopped):
-   roster resume <existing-worker-id>
+   # Ensure live (if existing worker matches but is stopped):
+   roster ensure <existing-worker-id>
    roster notify <existing-worker-id> "<task>" --from {{.ID}}
    ```
 
@@ -358,8 +358,8 @@ doubt, the heredoc form is bulletproof.
   nothing; spawning a duplicate ("research-2", "draft-3") burns
   context, confuses the user with extra sidebar tiles, and forfeits
   the prior worker's accumulated knowledge.
-- **Resume, don't re-spawn.** If a matching worker is `stopped`,
-  `roster resume <id>` brings it back with its full conversation
+- **Reuse, don't re-spawn.** If a matching worker is `stopped`,
+  `roster ensure <id>` brings it back with its full conversation
   history. Spawning a fresh one with a similar name is almost
   always the wrong call.
 - Only keep workers you intend to use. `roster forget <id>` the ones

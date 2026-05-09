@@ -15,10 +15,12 @@ Lifecycle:
           Register an agent, spawn the Claude via camux, print its target.
           --kind defaults to 'worker'. If --parent is given, a system-prompt
           appendix teaches the spawned Claude to notify its parent.
-  resume  <id>
-          Re-spawn a stopped agent using its saved session UUID + spawn_args.
+  ensure  <id>
+          Make a registered agent's tmux target live. Idempotent: prints
+          the existing target if already ready, otherwise re-spawns Claude
+          from its saved spawn_args (and SessionUUID, when restorable).
   stop    <id>
-          Kill the tmux session but keep the record (resumable).
+          Kill the tmux session but keep the record. ensure brings it back.
   forget  <id>
           Delete the record (and kill if still running).
 
@@ -110,8 +112,8 @@ func main() {
 		err = cmdSearch(args)
 	case "update":
 		err = cmdUpdate(args)
-	case "resume":
-		err = cmdResume(args)
+	case "ensure":
+		err = cmdEnsure(args)
 	case "stop":
 		err = cmdStop(args)
 	case "forget":

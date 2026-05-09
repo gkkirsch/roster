@@ -164,7 +164,7 @@ func preflightNotify(target string) error {
 	case "dead", "not-found":
 		return fmt.Errorf("target %s is %s", target, st)
 	case "stopped":
-		return fmt.Errorf("target %s is stopped — run `roster resume` first", target)
+		return fmt.Errorf("target %s is stopped — run `roster ensure` first", target)
 	case "permission-dialog", "trust-dialog":
 		return fmt.Errorf("target %s is on a %s — clear it (camux interrupt) before sending", target, st)
 	}

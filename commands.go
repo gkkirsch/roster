@@ -39,7 +39,7 @@ func cmdSpawn(args []string) error {
 		return err
 	}
 	if agentExists(id) {
-		return fmt.Errorf("spawn: agent %q already exists (use `roster resume %s` or `roster forget %s` first)", id, id, id)
+		return fmt.Errorf("spawn: agent %q already exists (use `roster ensure %s` or `roster forget %s` first)", id, id, id)
 	}
 	if *parent != "" && !agentExists(*parent) {
 		return fmt.Errorf("spawn: --parent %q not in roster", *parent)
@@ -122,8 +122,8 @@ func cmdSpawn(args []string) error {
 	}
 
 	// Pull the Claude session UUID via camux info (best-effort — if it
-	// fails, we still save the record without it; resume won't work but
-	// the record is still valid).
+	// fails, we still save the record without it; ensure can't restore
+	// the conversation but the record is still valid).
 	var sessionUUID, cwd string
 	if info, err := camuxInfo(target); err == nil {
 		sessionUUID = info.SessionID
@@ -455,76 +455,89 @@ func migrateLegacySystemPromptArgs(id string, args []string) ([]string, bool) {
 	return out, rewrote
 }
 
-// --- resume -----------------------------------------------------------------
+// --- ensure -----------------------------------------------------------------
 
-func cmdResume(args []string) error {
+// cmdEnsure makes a registered agent's tmux target live. Idempotent:
+//
+//   - Already ready                   → print target, done.
+//   - Stopped / dead / window missing → re-prepare isolation, camux spawn,
+//                                       persist the (possibly new) target.
+//   - Saved SessionUUID won't restore → blow it away once and retry fresh,
+//                                       so a missing JSONL doesn't strand
+//                                       the orch.
+//
+// All callers that want "this agent should be running" use this. Spawn
+// is reserved for first-time registration; ensure is for everything else.
+func cmdEnsure(args []string) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: roster resume <id>")
+		return fmt.Errorf("usage: roster ensure <id>")
 	}
 	id := args[0]
 	a, err := loadAgent(id)
 	if err != nil {
 		return err
 	}
-	// If already live, just print the target.
 	if camuxStatus(a.Target) == "ready" {
 		fmt.Println(a.Target)
 		return nil
 	}
+
 	session := a.ID
 	if _, err := prepareClaudeIsolation(a.Kind, a.ID, a.Parent, session); err != nil {
-		return fmt.Errorf("resume: claude dir isolation: %w", err)
+		return fmt.Errorf("ensure: claude dir isolation: %w", err)
 	}
 	if _, err := prepareBrowserIsolation(a.Kind, a.ID, a.Parent, session); err != nil {
-		return fmt.Errorf("resume: browser env: %w", err)
+		return fmt.Errorf("ensure: browser env: %w", err)
 	}
 
-	// Migrate legacy --system-prompt <inline> args to
-	// --system-prompt-file <path>. Agents saved before the prompt-file
-	// fix have giant inline prompts in their SpawnArgs; passing those
-	// through tmux + shell mangles them and claude crashes on launch
-	// (see commit history for the full story). Rewrite once, persist
-	// to the registry, and every subsequent resume uses the safe form.
+	// Migrate legacy --system-prompt <inline> args to --system-prompt-file
+	// <path>. Inline prompts get mangled passing through tmux's shell, and
+	// claude crashes on launch. Rewrite once and persist.
 	if migrated, rewrote := migrateLegacySystemPromptArgs(a.ID, a.SpawnArgs); rewrote {
 		a.SpawnArgs = migrated
 		if err := saveAgent(a); err != nil {
-			return fmt.Errorf("resume: persist migrated spawn args: %w", err)
+			return fmt.Errorf("ensure: persist migrated spawn args: %w", err)
 		}
 	}
 
-	flags := append([]string{}, a.SpawnArgs...)
-	if a.SessionUUID != "" {
-		flags = append(flags, "--resume", a.SessionUUID)
-	}
-	flags = append(flags, "--cwd", agentSpaceDir(a.Kind, a.ID, a.Parent))
-	spawnArgs := append([]string{"spawn", session}, flags...)
-	out, err := runCamux(spawnArgs...)
+	out, err := runCamuxSpawn(a)
 	if err != nil && a.SessionUUID != "" {
-		// `claude --resume <uuid>` fails when the JSONL was deleted /
-		// rolled. Don't strand the orch — retry with a fresh session.
-		// The new session_uuid gets persisted at the bottom of this
-		// function via saveAgent so the next resume picks it up.
-		fresh := append([]string{}, a.SpawnArgs...)
-		spawnFresh := append([]string{"spawn", session}, fresh...)
-		var freshErr error
-		if out, freshErr = runCamux(spawnFresh...); freshErr == nil {
-			a.SessionUUID = "" // forget the dead one
-			err = nil
-		} else {
-			err = fmt.Errorf("%w; fresh-spawn fallback also failed: %v", err, freshErr)
-		}
+		// `claude --resume <uuid>` failed — JSONL was deleted/rolled, or
+		// the UUID was stale. Forget it and try fresh. We retry exactly
+		// once: if a fresh spawn also fails, that's the real underlying
+		// problem; surface it directly rather than chaining error noise.
+		a.SessionUUID = ""
+		out, err = runCamuxSpawn(a)
 	}
 	if err != nil {
-		return fmt.Errorf("resume: camux spawn failed: %w", err)
+		return fmt.Errorf("ensure: %w", err)
 	}
+
 	target := strings.TrimSpace(strings.Split(out, "\n")[0])
 	a.Target = target
 	a.LastSeen = time.Now().UTC()
+	// Pull the live claude session UUID via camux info. Best-effort: if
+	// camux can't read it, the record is still valid — we just won't be
+	// able to --resume on the next ensure call (a fresh spawn will run).
+	if info, err := camuxInfo(target); err == nil && info.SessionID != "" {
+		a.SessionUUID = info.SessionID
+	}
 	if err := saveAgent(a); err != nil {
 		return err
 	}
 	fmt.Println(target)
 	return nil
+}
+
+// runCamuxSpawn invokes `camux spawn` with the agent's saved flags. Adds
+// --resume only when SessionUUID is set; pins --cwd to the agent's space.
+func runCamuxSpawn(a *Agent) (string, error) {
+	flags := append([]string{}, a.SpawnArgs...)
+	if a.SessionUUID != "" {
+		flags = append(flags, "--resume", a.SessionUUID)
+	}
+	flags = append(flags, "--cwd", agentSpaceDir(a.Kind, a.ID, a.Parent))
+	return runCamux(append([]string{"spawn", a.ID}, flags...)...)
 }
 
 // --- stop -------------------------------------------------------------------
@@ -633,18 +646,16 @@ func cmdNotify(args []string) error {
 		return err
 	}
 
-	// Self-heal: if the agent's tmux session is gone (not-found / dead)
-	// or it never had a target (stopped), resume from the saved spawn
-	// args before trying to deliver. The dispatcher routinely shells
-	// `roster notify <orch>` for orchs that may have been reaped after
-	// a reboot or claude exit; auto-resume turns this from a hard error
-	// into a transparent recovery. director-server's HTTP /notify has
-	// the same self-heal — both paths now behave consistently.
-	resumable := func(s string) bool { return s == "not-found" || s == "dead" || s == "stopped" }
-	if a.Target == "" || resumable(camuxStatus(a.Target)) {
-		fmt.Fprintf(os.Stderr, "roster: notify: %s is offline — auto-resuming\n", to)
-		if err := cmdResume([]string{to}); err != nil {
-			return fmt.Errorf("notify: auto-resume of %s failed: %w", to, err)
+	// Self-heal: if the agent's tmux target is offline, ensure brings it
+	// back from saved spawn args before we try to deliver. The dispatcher
+	// routinely shells `roster notify <orch>` for orchs that may have been
+	// reaped after a reboot or claude exit. director-server's HTTP /notify
+	// has the same self-heal — both paths now behave consistently.
+	offline := func(s string) bool { return s == "not-found" || s == "dead" || s == "stopped" }
+	if a.Target == "" || offline(camuxStatus(a.Target)) {
+		fmt.Fprintf(os.Stderr, "roster: notify: %s is offline — ensuring\n", to)
+		if err := cmdEnsure([]string{to}); err != nil {
+			return fmt.Errorf("notify: ensure of %s failed: %w", to, err)
 		}
 		a, err = loadAgent(to)
 		if err != nil {
@@ -652,7 +663,7 @@ func cmdNotify(args []string) error {
 		}
 	}
 	if a.Target == "" {
-		return fmt.Errorf("notify: %s has no target after resume (saved spawn args missing?)", to)
+		return fmt.Errorf("notify: %s has no target after ensure (saved spawn args missing?)", to)
 	}
 	if err := preflightNotify(a.Target); err != nil {
 		return fmt.Errorf("notify: %w", err)

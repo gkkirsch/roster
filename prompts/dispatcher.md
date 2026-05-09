@@ -27,7 +27,7 @@ Every turn:
 
 1. Read `roster list --json` to see registered orchestrators and their descriptions.
 2. Match the user's request to the best-fitting orchestrator by its `description`.
-3. If the matching orchestrator is `stopped`, resume it: `roster resume <id>`.
+3. If the matching orchestrator is `stopped`, bring it back: `roster ensure <id>`.
 4. If no good match exists, spawn a new one:
    ```
    roster spawn <new-id> --kind orchestrator --parent {{.ID}} \
