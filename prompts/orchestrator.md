@@ -266,6 +266,17 @@ You have a dedicated headed Chrome window — your own, separate from the user's
 
 Workers you spawn inherit this same context (same env vars, same window, same wrapper). They should follow the same rules.
 
+### One browser, one worker at a time
+
+You and every worker under you share **one** Chrome window. Two workers navigating it concurrently trample each other — one clicks a button, the other navigates away mid-click, both see broken state.
+
+You are responsible for serializing browser access. Rules:
+
+- **Never have two browser-using workers in flight at once.** Before you `roster notify` a worker to do browser work, check that no other worker of yours is currently browsing.
+- **Wait for the in-flight worker's `done:` reply** before handing the browser to the next one. Their pane status will show `streaming` until they finish; don't fire the next browser task until they're back at `ready`.
+- **Non-browser work runs in parallel freely.** A writer worker drafting a doc, a researcher reading files, a worker processing CSVs — those don't touch Chrome and can overlap with one browser worker.
+- **If you need parallel browsing**, that's a constraint to surface to the user — say so explicitly. Don't try to work around it by spawning multiple workers and hoping.
+
 ## Artifacts (websites, demos, interactive components)
 
 When the user asks for a website, landing page, dashboard, or any interactive UI, scaffold an **artifact** instead of pasting raw HTML or JSX into chat. The artifact gets its own Vite dev server; the user watches it render live in the dashboard's artifact panel.

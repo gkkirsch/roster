@@ -797,7 +797,63 @@ func cmdPrompt(args []string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
+	case "refresh":
+		// Re-render an agent's per-spawn prompt file from the current
+		// template. Per-spawn prompts are written once at spawn time and
+		// passed to claude via --system-prompt-file; without this command,
+		// edits to ~/.config/roster/prompts/<kind>.md only affect future
+		// spawns. Refresh + stop + ensure re-applies the template to a
+		// running agent.
+		fs := flag.NewFlagSet("refresh", flag.ContinueOnError)
+		fs.SetOutput(io.Discard)
+		all := fs.Bool("all", false, "refresh every registered agent")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		rest := fs.Args()
+		var ids []string
+		switch {
+		case *all && len(rest) == 0:
+			agents, err := listAgents()
+			if err != nil {
+				return err
+			}
+			for _, a := range agents {
+				ids = append(ids, a.ID)
+			}
+		case !*all && len(rest) == 1:
+			ids = []string{rest[0]}
+		default:
+			return fmt.Errorf("usage: roster prompt refresh <id> | roster prompt refresh --all")
+		}
+		for _, id := range ids {
+			a, err := loadAgent(id)
+			if err != nil {
+				return fmt.Errorf("refresh %s: %w", id, err)
+			}
+			claudeDir, err := claudeDirFor(a.Kind, a.ID, a.Parent)
+			if err != nil {
+				return fmt.Errorf("refresh %s: resolve claude dir: %w", id, err)
+			}
+			rendered, err := renderPrompt(a.Kind, promptData{
+				ID:          a.ID,
+				Parent:      a.Parent,
+				Description: a.Description,
+				Space:       agentSpaceDir(a.Kind, a.ID, a.Parent),
+				ClaudeDir:   claudeDir,
+			})
+			if err != nil {
+				return fmt.Errorf("refresh %s: render: %w", id, err)
+			}
+			path, err := writeSpawnPrompt(a.ID, rendered)
+			if err != nil {
+				return fmt.Errorf("refresh %s: write: %w", id, err)
+			}
+			fmt.Printf("✓ %s → %s\n", id, path)
+		}
+		fmt.Fprintln(os.Stderr, "\nClaude reads --system-prompt-file at launch only — `roster stop <id> && roster ensure <id>` to apply.")
+		return nil
 	default:
-		return fmt.Errorf("prompt: unknown subcommand %q (want show|edit)", sub)
+		return fmt.Errorf("prompt: unknown subcommand %q (want show|edit|refresh)", sub)
 	}
 }

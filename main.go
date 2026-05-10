@@ -65,6 +65,10 @@ Setup:
           see what an agent will actually see.
   prompt edit <kind>
           Open the template in $EDITOR.
+  prompt refresh <id> | --all
+          Re-render the per-spawn prompt files from the current template.
+          Claude reads --system-prompt-file at launch only, so follow with
+          stop <id> + ensure <id> for the change to take effect.
   doctor  [--fix]
           Diagnose common config issues: agent-browser wrapper + sidecar,
           stale agent-browser daemons, orphan Chrome processes from
