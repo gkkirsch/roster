@@ -681,9 +681,14 @@ func cmdNotify(args []string) error {
 	if *from != "" {
 		footer := ""
 		if agentExists(*from) {
+			// Mirrors the "do not reply to acknowledgments" rule in the
+			// orchestrator/worker prompts: replying is opt-in, not
+			// reflexive. Without this softening, recipients read the
+			// "to respond, do X" footer as an instruction and ack-of-ack
+			// loops are the result.
 			footer = fmt.Sprintf(
-				"\n\nTo respond, end your turn with: `roster notify %s \"<your reply>\" --from <your-agent-id>`. Plain text alone does NOT reach %s.",
-				*from, *from,
+				"\n\nReply only if you have substance for %s — a question, a blocker, or a result they need. Routine acknowledgments are noise; silence is the right answer when there's nothing to add. When you do reply: `roster notify %s \"<your reply>\" --from <your-agent-id>` (plain text does NOT reach %s).",
+				*from, *from, *from,
 			)
 		}
 		delivered = fmt.Sprintf("<from id=\"%s\">\n%s%s\n</from>", *from, msg, footer)
