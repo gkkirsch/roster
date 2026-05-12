@@ -459,12 +459,24 @@ func migrateLegacySystemPromptArgs(id string, args []string) ([]string, bool) {
 
 // cmdEnsure makes a registered agent's tmux target live. Idempotent:
 //
-//   - Already ready                   → print target, done.
-//   - Stopped / dead / window missing → re-prepare isolation, camux spawn,
-//                                       persist the (possibly new) target.
-//   - Saved SessionUUID won't restore → blow it away once and retry fresh,
-//                                       so a missing JSONL doesn't strand
-//                                       the orch.
+//   - Already alive (tmux session up)  → print target, done. Do NOT respawn.
+//   - Stopped / dead / window missing  → tear down any stale tmux session
+//                                        defensively, then camux spawn,
+//                                        persist the (possibly new) target.
+//   - Saved SessionUUID won't restore  → blow it away once and retry fresh,
+//                                        so a missing JSONL doesn't strand
+//                                        the orch.
+//
+// The "alive" gate is critical for cross-relaunch survival: the dispatcher's
+// tmux session persists across app quits (intentional — preserves the
+// conversation). On relaunch, ensure must adopt the orphan, not respawn
+// over it. amux exists is the authoritative liveness signal — it ignores
+// camux's status string (which can transiently report "stopped" while
+// claude is booting, scrolled, or showing a banner) and only asks tmux
+// directly. Without this gate, a non-"ready" status causes a respawn,
+// which collides with the alive claude on the JSONL lock; the new claude
+// crashes before tmux can render remain-on-exit, and director-app's setup
+// page loops forever on "window <id>:cc vanished after creation".
 //
 // All callers that want "this agent should be running" use this. Spawn
 // is reserved for first-time registration; ensure is for everything else.
@@ -477,10 +489,23 @@ func cmdEnsure(args []string) error {
 	if err != nil {
 		return err
 	}
-	if camuxStatus(a.Target) == "ready" {
-		fmt.Println(a.Target)
-		return nil
+	if a.Target != "" {
+		sess := strings.SplitN(a.Target, ":", 2)[0]
+		if camuxStatus(a.Target) == "ready" || amuxSessionExists(sess) {
+			a.LastSeen = time.Now().UTC()
+			_ = saveAgent(a)
+			fmt.Println(a.Target)
+			return nil
+		}
 	}
+
+	// Defensive cleanup: if a tmux session under our id somehow exists
+	// (orphan from a prior crash, leftover from a botched ensure that
+	// got past the alive-gate but lost its target on disk), tear it
+	// down before spawning. Otherwise camux spawn will create a new
+	// window in the existing session and claude will race the JSONL
+	// lock with whatever's inside.
+	_, _ = runAmux("kill", a.ID)
 
 	session := a.ID
 	if _, err := prepareClaudeIsolation(a.Kind, a.ID, a.Parent, session); err != nil {
@@ -856,4 +881,62 @@ func cmdPrompt(args []string) error {
 	default:
 		return fmt.Errorf("prompt: unknown subcommand %q (want show|edit|refresh)", sub)
 	}
+}
+
+// --- health -----------------------------------------------------------------
+
+// healthReport mirrors the JSON we emit from `roster health <id>`.
+// director-server's /api/health/dispatcher proxies this report to the
+// setup page; the setup page uses .Healthy as the gate to leave.
+type healthReport struct {
+	ID                string `json:"id"`
+	Target            string `json:"target"`
+	TmuxSessionExists bool   `json:"tmux_session_exists"`
+	CamuxStatus       string `json:"camux_status"`
+	SessionUUID       string `json:"session_uuid,omitempty"`
+	Healthy           bool   `json:"healthy"`
+	Reason            string `json:"reason,omitempty"`
+}
+
+// cmdHealth reports on an agent's actual on-disk + tmux + camux state
+// as JSON. Same liveness logic as cmdEnsure's alive-gate: tmux session
+// existing under the agent's id is sufficient evidence the dispatcher
+// is reachable, even if claude inside is mid-stream or showing a banner.
+//
+// Exists so director-server can answer "is the dispatcher OK?" without
+// kicking another `ensure` (which writes state and could race a running
+// init goroutine). Pure read.
+func cmdHealth(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: roster health <id>")
+	}
+	id := args[0]
+	a, err := loadAgent(id)
+	if err != nil {
+		return err
+	}
+	h := healthReport{
+		ID:          a.ID,
+		Target:      a.Target,
+		SessionUUID: a.SessionUUID,
+	}
+	var sess string
+	if a.Target != "" {
+		sess = strings.SplitN(a.Target, ":", 2)[0]
+		h.TmuxSessionExists = amuxSessionExists(sess)
+		h.CamuxStatus = camuxStatus(a.Target)
+	}
+	switch {
+	case a.Target == "":
+		h.Reason = "no target recorded — needs spawn"
+	case !h.TmuxSessionExists:
+		h.Reason = "tmux session " + sess + " not found"
+	case h.CamuxStatus == "dead":
+		h.Reason = "claude pane is dead"
+	default:
+		h.Healthy = true
+	}
+	b, _ := json.MarshalIndent(h, "", "  ")
+	fmt.Println(string(b))
+	return nil
 }

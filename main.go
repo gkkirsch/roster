@@ -23,6 +23,10 @@ Lifecycle:
           Kill the tmux session but keep the record. ensure brings it back.
   forget  <id>
           Delete the record (and kill if still running).
+  health  <id>
+          JSON report on agent's live tmux/camux state. Pure read — never
+          spawns or modifies state. Used by director-server's setup page
+          to gate "is the dispatcher ready?" without racing init.
 
 Visibility:
   list    [--kind K] [--parent P] [--status S] [--json]
@@ -122,6 +126,8 @@ func main() {
 		err = cmdStop(args)
 	case "forget":
 		err = cmdForget(args)
+	case "health":
+		err = cmdHealth(args)
 	case "notify":
 		err = cmdNotify(args)
 	case "trace":

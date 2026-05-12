@@ -114,6 +114,21 @@ func camuxStatus(target string) string {
 	return strings.TrimSpace(out.String())
 }
 
+// amuxSessionExists reports whether tmux session `sess` is currently live.
+// Authoritative liveness signal for ensure: even when camuxStatus isn't
+// "ready" (claude is booting, mid-stream, scrolled, or showing a banner),
+// an existing tmux session means a claude process is in there and we
+// must not try to respawn over it — doing so collides with the alive
+// claude's JSONL lock and the new window's claude crashes instantly,
+// triggering the "window <id>:cc vanished after creation" loop.
+func amuxSessionExists(sess string) bool {
+	if sess == "" {
+		return false
+	}
+	_, err := runAmux("exists", sess)
+	return err == nil
+}
+
 // camuxInfo invokes `camux info <target> --json` and parses it.
 type camuxInfoOut struct {
 	SessionID string `json:"session_id"`
