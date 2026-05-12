@@ -43,7 +43,7 @@ agent-browser select @e1 "option"    # pick a dropdown option
 agent-browser check @e1 / uncheck @e1
 agent-browser press Enter            # send a key
 agent-browser scroll down 500
-agent-browser screenshot path.png
+agent-browser screenshot screenshots/<name>.png   # see "Screenshot paths" below
 agent-browser get text @e1
 agent-browser get url
 agent-browser get title
@@ -67,3 +67,19 @@ URL: https://example.com/login
 ```
 
 For the full reference, the upstream tool serves a richer guide via `agent-browser skills get core --full` — but the roster wrapper rules above always take precedence over anything that suggests `--cdp`, `connect`, `dashboard`, or `install`.
+
+## Screenshot paths
+
+**Always save screenshots under `screenshots/`** (relative to your space — the path that's already your cwd). Use a descriptive filename, not a generic one. Examples:
+
+```bash
+agent-browser screenshot screenshots/login-failed.png
+agent-browser screenshot screenshots/lead-claudia-profile.png
+agent-browser screenshot screenshots/dashboard-after-deploy.png
+```
+
+Why this matters:
+- The user's Library panel reads your space — anything you write there shows up. `screenshots/` keeps it grouped instead of mixed in with notes, csvs, and logs.
+- Descriptive names mean a screenshot from a week ago is still useful. `debug.png` is not.
+
+Never save to `/tmp`, the parent's space, or the user's Desktop. Stay in your own space.

@@ -307,6 +307,66 @@ Rules:
 - **Write / Edit** — small file changes you don't want to delegate
 - **Agent** — built-in subagent tool for bounded in-context work
 
+## Scheduling recurring work
+
+When you commit to "check this every morning", "rerun this hourly",
+or "follow up in 3 days", install it as a real cron task with
+`roster schedule` — don't rely on remembering. The cron runs even
+across restarts; the prompt is delivered to you as a new user turn
+when it fires.
+
+Three command shapes:
+
+```
+# Daily at fixed time(s) — most common form for outreach loops, standups,
+# end-of-day rollups
+roster schedule create {{.ID}} --prompt "Daily DM round: …" --daily-at "09:00,14:00"
+
+# Explicit 5-field cron — for "every 20 min", "every Mon/Wed/Fri at 7am",
+# anything --daily-at can't express
+roster schedule create {{.ID}} --prompt "Standup with yourself: walk every task on your panel." --cron "*/20 * * * *"
+
+# One-shot at a specific local time — for follow-ups, deadlines, dated
+# checks. Auto-deletes after firing.
+roster schedule create {{.ID}} --prompt "Check whether Adam responded to the proposal." --once "2026-05-15T09:00"
+```
+
+Inspect + delete:
+
+```
+roster schedule list {{.ID}}                  # show all tasks + cron + next-fire
+roster schedule delete {{.ID}} <task-id>      # by 8-char hex id from list
+```
+
+When to schedule vs. just reply now:
+- **Schedule** if the work has a clean future trigger ("each weekday at
+  09:00", "30 min after the call") OR you owe the user a recurring
+  cadence ("standup every 20 min", "daily DM round at 14:00").
+- **Don't schedule** for one-off tasks you can finish in this turn, or
+  for follow-ups you'd naturally do as a continuation of the current
+  conversation.
+
+Prompt-text rule: write the schedule prompt the way you'd talk to
+yourself when it fires — clear context, what to do, where to write
+results. It arrives with no surrounding chat, so anything assumed
+("the doc we discussed", "the leads") needs to be spelled out by
+name. Save files to your space (`{{.Space}}`) so the user can read
+them via the Library panel.
+
+Heads-up on escaping: `--prompt "..."` runs through Bash, so the same
+`$`/backtick/quote rules as `roster notify` apply (see next section).
+For multi-paragraph prompts, prefer a heredoc:
+
+```
+roster schedule create {{.ID}} --cron "0 14 * * *" --prompt "$(cat <<'EOF'
+Daily check-in. Three steps:
+1. ...
+2. ...
+3. Write the result to library/checkin-$(date +%Y-%m-%d).md.
+EOF
+)"
+```
+
 ## Shell escaping in `roster notify`
 
 `roster notify "<message>"` runs through Bash. **Bash expands special

@@ -14,10 +14,20 @@ import (
 	"time"
 )
 
-// CRUD on each orch's <CLAUDE_CONFIG_DIR>/scheduled_tasks.json. Claude
-// Code reads the same file natively and runs the prompts when their
-// cron matches; this CLI just lets you list / add / remove durable
-// jobs from the command line, mirroring fleetview's HTTP surface.
+// CRUD on each orch's <space>/.claude/scheduled_tasks.json. Claude Code
+// reads this natively (it does `path.join(getProjectRoot(),
+// '.claude/scheduled_tasks.json')` — see cronTasks.ts in the internals
+// repo) and fires the prompts when their cron matches. This CLI just
+// lets you list / add / remove durable jobs from the command line,
+// mirroring fleetview's HTTP surface.
+//
+// IMPORTANT — path is keyed off the agent's *space*, NOT its CLAUDE_CONFIG_DIR:
+//   ~/Library/Application Support/Director/<orch-id>/.claude/scheduled_tasks.json
+//                                       └── orch cwd (== projectRoot in claude) ──┘
+// Previous versions wrote to <CLAUDE_CONFIG_DIR>/scheduled_tasks.json,
+// which Claude Code's cronScheduler never reads — schedules existed on
+// disk but never fired. loadSchedules below auto-migrates from the
+// legacy location on first read so user data isn't lost.
 //
 // Storage shape (matches Claude Code + superbot3's broker):
 //
@@ -40,22 +50,51 @@ type scheduleStore struct {
 	Tasks []scheduleTask `json:"tasks"`
 }
 
-// schedulesPath returns <orch_claude_dir>/scheduled_tasks.json. Errors
-// when the orch has no isolated dir (dispatcher / pre-isolation
-// orchs); the user's global ~/.claude/scheduled_tasks.json is theirs
-// to manage with `claude` directly.
+// schedulesPath returns <orch_space>/.claude/scheduled_tasks.json — the
+// location Claude Code's cronScheduler actually reads. Errors when the
+// agent isn't in the registry. The user's global
+// ~/.claude/scheduled_tasks.json is theirs to manage with `claude`
+// directly; we don't touch it.
 func schedulesPath(orchID string) (string, error) {
-	dir, err := orchestratorClaudeDir(orchID)
+	a, err := loadAgent(orchID)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "scheduled_tasks.json"), nil
+	space := agentSpaceDir(a.Kind, a.ID, a.Parent)
+	return filepath.Join(space, ".claude", "scheduled_tasks.json"), nil
+}
+
+// legacySchedulesPath returns the pre-fix location, where roster used
+// to write schedules: <orch_claude_dir>/scheduled_tasks.json. Used only
+// by loadSchedules for one-shot auto-migration into the canonical path.
+// Returns "" if it can't resolve (we just skip the migration then).
+func legacySchedulesPath(orchID string) string {
+	dir, err := orchestratorClaudeDir(orchID)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(dir, "scheduled_tasks.json")
 }
 
 func loadSchedules(orchID string) (string, scheduleStore, error) {
 	path, err := schedulesPath(orchID)
 	if err != nil {
 		return "", scheduleStore{}, err
+	}
+	// Auto-migrate: if the canonical file doesn't exist but a legacy
+	// one does (from before the path fix), move it over so the user's
+	// existing schedules start firing on the next claude startup
+	// without manual intervention.
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if legacy := legacySchedulesPath(orchID); legacy != "" {
+			if _, lerr := os.Stat(legacy); lerr == nil {
+				if mErr := migrateLegacySchedules(legacy, path); mErr == nil {
+					fmt.Fprintf(os.Stderr, "roster: migrated %s → %s\n", legacy, path)
+				} else {
+					fmt.Fprintf(os.Stderr, "roster: legacy schedules at %s found but migrate failed: %v\n", legacy, mErr)
+				}
+			}
+		}
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -72,6 +111,26 @@ func loadSchedules(orchID string) (string, scheduleStore, error) {
 		s.Tasks = []scheduleTask{}
 	}
 	return path, s, nil
+}
+
+// migrateLegacySchedules copies the old-location schedules file into
+// the canonical .claude/ location and removes the source. Same parent
+// dir is created if needed. Best-effort: a copy that succeeds but a
+// remove that fails still counts as success — we don't want the user
+// running with two competing files.
+func migrateLegacySchedules(from, to string) error {
+	b, err := os.ReadFile(from)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(to, b, 0o644); err != nil {
+		return err
+	}
+	_ = os.Remove(from)
+	return nil
 }
 
 func saveSchedules(path string, s scheduleStore) error {
