@@ -92,6 +92,17 @@ func cmdSpawn(args []string) error {
 
 	session := id
 
+	// Defensive cleanup: tear down any stale tmux session named `id`
+	// before spawning. This matters after a forget/reset path where the
+	// registry entry was removed but the previous claude's tmux session
+	// (or a half-dead state with a stray zsh window) outlived it. Without
+	// this, camux spawn creates a new `cc` window inside the orphaned
+	// session and the new claude races the old JSONL lock — it crashes
+	// instantly, tmux closes the window before remain-on-exit can render,
+	// and we report "window <id>:cc vanished after creation". cmdEnsure
+	// already does this; cmdSpawn was missing it.
+	_, _ = runAmux("kill", id)
+
 	// Isolate this agent's ~/.claude. Each agent kind gets its own dir:
 	//   orchestrator → own dir
 	//   worker       → inherits its orchestrator's dir
