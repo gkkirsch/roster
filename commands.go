@@ -490,8 +490,15 @@ func cmdEnsure(args []string) error {
 		return err
 	}
 	if a.Target != "" {
-		sess := strings.SplitN(a.Target, ":", 2)[0]
-		if camuxStatus(a.Target) == "ready" || amuxSessionExists(sess) {
+		status := camuxStatus(a.Target)
+		// Alive iff the tmux WINDOW (not just the session) exists AND
+		// claude isn't sitting in a dead pane. Window-level check is
+		// load-bearing: a session can outlive its claude window if a
+		// stray shell window keeps the session up — checking just the
+		// session would mistakenly adopt the half-dead state, ensure
+		// would short-circuit, and the user's next message would
+		// silently route to a window that no longer exists.
+		if status != "dead" && amuxTargetExists(a.Target) {
 			a.LastSeen = time.Now().UTC()
 			_ = saveAgent(a)
 			fmt.Println(a.Target)
@@ -888,10 +895,17 @@ func cmdPrompt(args []string) error {
 // healthReport mirrors the JSON we emit from `roster health <id>`.
 // director-server's /api/health/dispatcher proxies this report to the
 // setup page; the setup page uses .Healthy as the gate to leave.
+//
+// TmuxSessionExists is the session-only check (kept for back-compat
+// + UI debugging) and is NOT the liveness signal — it can be true
+// while the agent's actual claude window is gone. TmuxWindowExists
+// is the window-level check (e.g. amux exists director:cc), and is
+// what .Healthy is computed from along with the camuxStatus.
 type healthReport struct {
 	ID                string `json:"id"`
 	Target            string `json:"target"`
 	TmuxSessionExists bool   `json:"tmux_session_exists"`
+	TmuxWindowExists  bool   `json:"tmux_window_exists"`
 	CamuxStatus       string `json:"camux_status"`
 	SessionUUID       string `json:"session_uuid,omitempty"`
 	Healthy           bool   `json:"healthy"`
@@ -923,14 +937,22 @@ func cmdHealth(args []string) error {
 	var sess string
 	if a.Target != "" {
 		sess = strings.SplitN(a.Target, ":", 2)[0]
-		h.TmuxSessionExists = amuxSessionExists(sess)
+		h.TmuxSessionExists = amuxTargetExists(sess)
+		h.TmuxWindowExists = amuxTargetExists(a.Target)
 		h.CamuxStatus = camuxStatus(a.Target)
 	}
 	switch {
 	case a.Target == "":
 		h.Reason = "no target recorded — needs spawn"
-	case !h.TmuxSessionExists:
-		h.Reason = "tmux session " + sess + " not found"
+	case !h.TmuxWindowExists:
+		// Distinguish "session and window both missing" from "session
+		// alive but window gone" — the latter is the silent-failure
+		// case that motivated the window-level check.
+		if h.TmuxSessionExists {
+			h.Reason = "tmux session " + sess + " is alive but window " + a.Target + " is missing — needs respawn"
+		} else {
+			h.Reason = "tmux session " + sess + " not found"
+		}
 	case h.CamuxStatus == "dead":
 		h.Reason = "claude pane is dead"
 	default:

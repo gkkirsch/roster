@@ -114,18 +114,29 @@ func camuxStatus(target string) string {
 	return strings.TrimSpace(out.String())
 }
 
-// amuxSessionExists reports whether tmux session `sess` is currently live.
-// Authoritative liveness signal for ensure: even when camuxStatus isn't
-// "ready" (claude is booting, mid-stream, scrolled, or showing a banner),
-// an existing tmux session means a claude process is in there and we
+// amuxTargetExists reports whether the specific tmux target (which is
+// session:window like "director:cc") is currently live. Authoritative
+// liveness signal for ensure: even when camuxStatus isn't "ready"
+// (claude is booting, mid-stream, scrolled, showing a banner), an
+// existing tmux window means a claude process is in there and we
 // must not try to respawn over it — doing so collides with the alive
 // claude's JSONL lock and the new window's claude crashes instantly,
 // triggering the "window <id>:cc vanished after creation" loop.
-func amuxSessionExists(sess string) bool {
-	if sess == "" {
+//
+// IMPORTANT: this MUST check the window, not just the session. A
+// session can survive even after its target window dies — e.g., if
+// someone attached to the session and tmux created a stray zsh window
+// that keeps the session alive after the claude pane closed. Checking
+// session-only mistakenly reports healthy, ensure returns success
+// without respawning, and the user's next message routes to a window
+// that doesn't exist → silent failure with no recovery. That's the
+// bug a prior version of this helper caused: it only checked the
+// session, so a half-dead session looked healthy forever.
+func amuxTargetExists(target string) bool {
+	if target == "" {
 		return false
 	}
-	_, err := runAmux("exists", sess)
+	_, err := runAmux("exists", target)
 	return err == nil
 }
 
