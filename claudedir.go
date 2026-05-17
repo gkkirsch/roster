@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // claudeDirFor resolves the effective CLAUDE_CONFIG_DIR for an agent.
@@ -47,6 +48,33 @@ func orchestratorClaudeDir(id string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// quarantineClaudeDir moves the agent's CLAUDE_CONFIG_DIR aside as a
+// last-resort recovery step in cmdEnsure's self-heal ladder. The
+// directory is renamed to <orig>.quarantine.<unix-ts> so it stays on
+// disk for forensics. Caller is expected to re-seed via
+// prepareClaudeIsolation and retry the spawn.
+//
+// Returns the quarantine path on success. Returns nil error and ""
+// when the agent has no isolated dir (kind=="" cases) — the caller
+// should treat that as "nothing to quarantine, escalate further".
+func quarantineClaudeDir(kind, id, parentID string) (string, error) {
+	dir, err := claudeDirFor(kind, id, parentID)
+	if err != nil {
+		return "", err
+	}
+	if dir == "" {
+		return "", nil
+	}
+	if _, err := os.Stat(dir); err != nil {
+		return "", err
+	}
+	q := fmt.Sprintf("%s.quarantine.%d", dir, time.Now().Unix())
+	if err := os.Rename(dir, q); err != nil {
+		return "", err
+	}
+	return q, nil
 }
 
 // findOrchestratorAncestor walks up the parent chain from startID until

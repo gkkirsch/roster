@@ -109,12 +109,17 @@ func cmdSpawn(args []string) error {
 	//   dispatcher   → own dir (no plugins/skills — pure router)
 	// Pre-creates the tmux session and sets CLAUDE_CONFIG_DIR on it so
 	// the upcoming new-window picks it up.
+	spawnTrace("spawn.enter", "id", id, "kind", *kind, "parent", *parent)
 	if _, err := prepareClaudeIsolation(*kind, id, *parent, session); err != nil {
+		spawnTrace("spawn.prepareClaudeIsolation.error", "id", id, "err", err.Error())
 		return fmt.Errorf("spawn: claude dir isolation: %w", err)
 	}
+	spawnTrace("spawn.prepareClaudeIsolation.ok", "id", id)
 	if _, err := prepareBrowserIsolation(*kind, id, *parent, session); err != nil {
+		spawnTrace("spawn.prepareBrowserIsolation.error", "id", id, "err", err.Error())
 		return fmt.Errorf("spawn: browser env: %w", err)
 	}
+	spawnTrace("spawn.prepareBrowserIsolation.ok", "id", id)
 
 	spawnArgs := append([]string{"spawn", session}, camuxFlags...)
 	spawnArgs = append(spawnArgs, "--timeout", rawTimeout.String())
@@ -123,14 +128,18 @@ func cmdSpawn(args []string) error {
 	// writes land where workers + the user expect.
 	spawnArgs = append(spawnArgs, "--cwd", agentSpaceDir(*kind, id, *parent))
 
+	spawnTrace("spawn.runCamux", "id", id, "args", strings.Join(spawnArgs, " "))
 	out, err := runCamux(spawnArgs...)
 	if err != nil {
+		spawnTrace("spawn.runCamux.error", "id", id, "err", err.Error(), "stdout", strings.TrimSpace(out))
 		return fmt.Errorf("spawn: camux spawn failed: %w", err)
 	}
 	target := strings.TrimSpace(strings.Split(out, "\n")[0])
 	if target == "" {
+		spawnTrace("spawn.runCamux.empty", "id", id, "stdout", strings.TrimSpace(out))
 		return fmt.Errorf("spawn: camux spawn returned empty target, stdout=%q", out)
 	}
+	spawnTrace("spawn.runCamux.ok", "id", id, "target", target)
 
 	// Pull the Claude session UUID via camux info (best-effort — if it
 	// fails, we still save the record without it; ensure can't restore
@@ -496,12 +505,17 @@ func cmdEnsure(args []string) error {
 		return fmt.Errorf("usage: roster ensure <id>")
 	}
 	id := args[0]
+	spawnTrace("ensure.enter", "id", id)
 	a, err := loadAgent(id)
 	if err != nil {
+		spawnTrace("ensure.loadAgent.error", "id", id, "err", err.Error())
 		return err
 	}
+	spawnTrace("ensure.loadAgent.ok", "id", id, "kind", a.Kind, "parent", a.Parent, "target", a.Target, "sessionUUID", a.SessionUUID)
 	if a.Target != "" {
 		status := camuxStatus(a.Target)
+		alive := amuxTargetExists(a.Target)
+		spawnTrace("ensure.alive-check", "target", a.Target, "status", status, "amuxTargetExists", fmt.Sprint(alive))
 		// Alive iff the tmux WINDOW (not just the session) exists AND
 		// claude isn't sitting in a dead pane. Window-level check is
 		// load-bearing: a session can outlive its claude window if a
@@ -509,9 +523,10 @@ func cmdEnsure(args []string) error {
 		// session would mistakenly adopt the half-dead state, ensure
 		// would short-circuit, and the user's next message would
 		// silently route to a window that no longer exists.
-		if status != "dead" && amuxTargetExists(a.Target) {
+		if status != "dead" && alive {
 			a.LastSeen = time.Now().UTC()
 			_ = saveAgent(a)
+			spawnTrace("ensure.adopt-orphan", "target", a.Target)
 			fmt.Println(a.Target)
 			return nil
 		}
@@ -543,18 +558,51 @@ func cmdEnsure(args []string) error {
 		}
 	}
 
+	// Self-heal ladder. Each rung is more destructive than the last; we
+	// only escalate if the previous rung fails. Each retry kills the
+	// half-spawned tmux session first (close the window-collision gap
+	// that bit us when the original retry skipped the cleanup).
+	//
+	// Customer-facing: the rung that healed is logged to stderr so
+	// support can see which corruption was at play.
+	spawnTrace("ensure.runCamuxSpawn.rung0", "id", a.ID, "sessionUUID", a.SessionUUID)
 	out, err := runCamuxSpawn(a)
+	spawnTrace("ensure.runCamuxSpawn.rung0.result", "id", a.ID, "err", spawnTraceErr(err))
 	if err != nil && a.SessionUUID != "" {
-		// `claude --resume <uuid>` failed — JSONL was deleted/rolled, or
-		// the UUID was stale. Forget it and try fresh. We retry exactly
-		// once: if a fresh spawn also fails, that's the real underlying
-		// problem; surface it directly rather than chaining error noise.
+		// Rung 1: `claude --resume <uuid>` failed — JSONL was deleted,
+		// rolled, or the UUID is stale. Drop it and retry fresh.
+		spawnTrace("ensure.selfheal.rung1.clearUUID", "id", a.ID, "wasUUID", a.SessionUUID)
+		fmt.Fprintln(os.Stderr, "ensure: self-heal: clearing stale session UUID and retrying fresh")
+		_, _ = runAmux("kill", a.ID)
 		a.SessionUUID = ""
 		out, err = runCamuxSpawn(a)
+		spawnTrace("ensure.selfheal.rung1.result", "id", a.ID, "err", spawnTraceErr(err))
 	}
 	if err != nil {
+		// Rung 2: a fresh spawn also failed. Most common culprit is a
+		// corrupt per-agent claude state (sessions/, history.jsonl,
+		// or a half-written .claude.json from a previous crash). Move
+		// the per-agent dir aside as a quarantine, let prepareClaude-
+		// Isolation re-seed it, and try one final time.
+		if quarantined, qerr := quarantineClaudeDir(a.Kind, a.ID, a.Parent); qerr == nil {
+			spawnTrace("ensure.selfheal.rung2.quarantine", "id", a.ID, "quarantined", quarantined)
+			fmt.Fprintf(os.Stderr, "ensure: self-heal: per-agent claude dir quarantined to %s, re-seeding\n", quarantined)
+			_, _ = runAmux("kill", a.ID)
+			if _, perr := prepareClaudeIsolation(a.Kind, a.ID, a.Parent, session); perr != nil {
+				spawnTrace("ensure.selfheal.rung2.reseed.error", "id", a.ID, "err", perr.Error())
+				return fmt.Errorf("ensure: re-seed after quarantine: %w", perr)
+			}
+			out, err = runCamuxSpawn(a)
+			spawnTrace("ensure.selfheal.rung2.result", "id", a.ID, "err", spawnTraceErr(err))
+		} else {
+			spawnTrace("ensure.selfheal.rung2.quarantine.skip", "id", a.ID, "reason", spawnTraceErr(qerr))
+		}
+	}
+	if err != nil {
+		spawnTrace("ensure.fail", "id", a.ID, "err", err.Error())
 		return fmt.Errorf("ensure: %w", err)
 	}
+	spawnTrace("ensure.ok", "id", a.ID, "target", strings.TrimSpace(strings.Split(out, "\n")[0]))
 
 	target := strings.TrimSpace(strings.Split(out, "\n")[0])
 	a.Target = target
